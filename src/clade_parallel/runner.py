@@ -15,6 +15,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+from ._exceptions import CladeParallelError
 from .manifest import Manifest, Task, load_manifest
 
 # ---------------------------------------------------------------------------
@@ -29,7 +30,7 @@ _CLAUDE_PROMPT_FLAG = "-p"
 # ---------------------------------------------------------------------------
 
 
-class RunnerError(Exception):
+class RunnerError(CladeParallelError):
     """Raised when the runner cannot proceed (e.g., claude binary not found)."""
 
 
@@ -95,24 +96,11 @@ class RunResult:
 # ---------------------------------------------------------------------------
 
 
-def _decode_optional_bytes(value: bytes | str | None) -> str:
-    """Decode bytes to str, pass str through, or return empty string for None.
-
-    Args:
-        value: A bytes, str, or None value from subprocess output attributes.
-
-    Returns:
-        A decoded string, or an empty string if value is None.
-    """
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode(errors="replace")
-    return value
-
-
 def _execute_task(task: Task, claude_exe: str) -> TaskResult:
     """Execute a single agent task as a subprocess and return its result.
+
+    Uses subprocess.Popen so that the process can be killed on timeout
+    instead of leaving it orphaned.
 
     Args:
         task: The Task configuration to execute.
@@ -129,44 +117,29 @@ def _execute_task(task: Task, claude_exe: str) -> TaskResult:
 
     start = time.perf_counter()
     try:
-        completed = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=task.cwd,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=task.timeout_sec,
-            check=False,
-            shell=False,
         )
-        duration = time.perf_counter() - start
-        return TaskResult(
-            task_id=task.id,
-            agent=task.agent,
-            returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-            timed_out=False,
-            duration_sec=duration,
-        )
-    except FileNotFoundError:
-        duration = time.perf_counter() - start
-        raise RunnerError(f"claude executable not found: {claude_exe!r}") from None
-    except subprocess.TimeoutExpired as exc:
-        duration = time.perf_counter() - start
-        stdout = _decode_optional_bytes(exc.stdout)
-        stderr = _decode_optional_bytes(exc.stderr)
-        return TaskResult(
-            task_id=task.id,
-            agent=task.agent,
-            returncode=None,
-            stdout=stdout,
-            stderr=stderr,
-            timed_out=True,
-            duration_sec=duration,
-        )
+    except FileNotFoundError as exc:
+        raise RunnerError(f"claude executable not found: {claude_exe!r}") from exc
+
+    try:
+        stdout, stderr = proc.communicate(timeout=task.timeout_sec)
+        timed_out = False
+        returncode: int | None = proc.returncode
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        # Flush remaining buffers after kill to avoid pipe deadlock.
+        stdout, stderr = proc.communicate()
+        timed_out = True
+        returncode = None
     except Exception:
-        duration = time.perf_counter() - start
+        duration_sec = time.perf_counter() - start
         return TaskResult(
             task_id=task.id,
             agent=task.agent,
@@ -174,8 +147,19 @@ def _execute_task(task: Task, claude_exe: str) -> TaskResult:
             stdout="",
             stderr=traceback.format_exc(),
             timed_out=False,
-            duration_sec=duration,
+            duration_sec=duration_sec,
         )
+
+    duration_sec = time.perf_counter() - start
+    return TaskResult(
+        task_id=task.id,
+        agent=task.agent,
+        returncode=returncode,
+        stdout=stdout or "",
+        stderr=stderr or "",
+        timed_out=timed_out,
+        duration_sec=duration_sec,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -223,17 +207,21 @@ def run_manifest(
             futures.append(future)
 
     # Collect results in submission order; propagate RunnerError if any occurred.
+    # Multiple RunnerErrors are collapsed: only the first one is reported;
+    # subsequent ones are suppressed.
     task_results: list[TaskResult] = []
     for future in futures:
         exc = future.exception()
-        if exc is not None:
-            if isinstance(exc, RunnerError) and runner_error is None:
-                runner_error = exc
-            else:
-                # Should not happen: _execute_task only raises RunnerError.
-                raise exc
-        else:
+        if exc is None:
             task_results.append(future.result())
+            continue
+        if isinstance(exc, RunnerError):
+            if runner_error is None:
+                runner_error = exc
+            # Subsequent RunnerError instances are suppressed.
+            continue
+        # BaseException-family (KeyboardInterrupt, SystemExit) propagates here.
+        raise exc
 
     if runner_error is not None:
         raise runner_error

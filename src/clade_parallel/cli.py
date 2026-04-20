@@ -157,10 +157,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    # No subcommand provided — print usage and exit with non-zero code.
+    # No subcommand provided — print usage and return with non-zero code.
     if args.command is None:
         parser.print_usage(sys.stderr)
-        sys.exit(_EXIT_MANIFEST_ERROR)
+        return _EXIT_MANIFEST_ERROR
 
     # --- subcommand: run ---
     try:

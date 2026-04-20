@@ -165,14 +165,13 @@ class TestNoArgumentsError:
     """Verify that invoking without arguments results in a non-zero exit."""
 
     def test_no_args_returns_nonzero(self) -> None:
-        """main() called with no arguments must exit with a non-zero code."""
+        """main() called with no arguments must return a non-zero code."""
         from clade_parallel import cli
 
-        with pytest.raises(SystemExit) as exc_info:
-            cli.main([])
+        exit_code = cli.main([])
 
-        # argparse exits with 2 for usage errors; assert non-zero is sufficient.
-        assert exc_info.value.code != 0
+        # main() returns a non-zero code when no subcommand is provided.
+        assert exit_code != 0
 
 
 class TestQuietFlag:

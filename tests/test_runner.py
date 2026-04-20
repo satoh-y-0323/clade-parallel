@@ -522,13 +522,14 @@ def test_並列実行時に異なるスレッドから呼ばれる(fake_claude_r
 
 @pytest.mark.slow
 def test_実プロセス経由でのスモークテスト(tmp_path):
-    """Smoke: use sys.executable as claude_executable to verify real process execution.
+    """Smoke: use a platform-specific wrapper script as claude_executable.
 
     This test is marked @pytest.mark.slow and excluded from the fast CI path.
-    On Windows, sys.executable runs a Python interpreter instead of 'claude'.
-    We pass a script that exits 0 to verify end-to-end process execution.
+    A wrapper script that accepts any arguments and exits 0 is used to verify
+    end-to-end process execution without depending on the real 'claude' binary.
+    Windows uses a .bat script; Unix uses a .sh script.
     """
-    smoke_manifest = f"""\
+    smoke_manifest = """\
 ---
 clade_plan_version: "0.1"
 name: smoke-test
@@ -536,16 +537,153 @@ tasks:
   - id: smoke-task
     agent: code-reviewer
     read_only: true
-    prompt: -c "import sys; sys.exit(0)"
 ---
 """
     p = tmp_path / "smoke.md"
     p.write_text(smoke_manifest, encoding="utf-8")
 
-    result = run_manifest(p, claude_executable=sys.executable)
+    # Create a platform-specific wrapper that accepts any args and exits 0.
+    if sys.platform == "win32":
+        wrapper = tmp_path / "fake_claude.bat"
+        wrapper.write_text("@echo off\r\nexit 0\r\n", encoding="utf-8")
+        claude_exe_path = str(wrapper)
+    else:
+        wrapper = tmp_path / "fake_claude.sh"
+        wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        claude_exe_path = str(wrapper)
+
+    result = run_manifest(p, claude_executable=claude_exe_path)
     assert isinstance(result, RunResult)
     assert len(result.results) == 1
     tr = result.results[0]
     assert tr.returncode == 0
     assert tr.ok is True
     assert result.overall_ok is True
+
+
+# ---------------------------------------------------------------------------
+# T13 F1: Timeout → subprocess.Popen.kill() is called (Red phase)
+# ---------------------------------------------------------------------------
+
+
+class FakePopen:
+    """Fake subprocess.Popen for testing timeout kill behavior.
+
+    On the first call to communicate(timeout=...), raises TimeoutExpired.
+    The second call to communicate() (no timeout) returns empty strings.
+    Records kill() invocations via kill_call_count.
+    """
+
+    def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+        self.cmd = cmd
+        self.returncode: int | None = None
+        self.pid: int = 99999
+        self.kill_call_count: int = 0
+        self._communicate_calls: int = 0
+
+    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+        """Simulate communicate(); raise TimeoutExpired on the first call."""
+        self._communicate_calls += 1
+        if self._communicate_calls == 1:
+            # First call: simulate timeout
+            raise subprocess.TimeoutExpired(cmd=self.cmd, timeout=timeout or 0)
+        # Second call (after kill): return empty buffers
+        return ("", "")
+
+    def kill(self) -> None:
+        """Record kill() invocation."""
+        self.kill_call_count += 1
+
+
+# Module-level registry so the test can inspect the FakePopen instance after the run.
+_fake_popen_instances: list[FakePopen] = []
+
+
+class _TrackingFakePopen(FakePopen):
+    """FakePopen that registers itself in the module-level list on creation."""
+
+    def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+        super().__init__(cmd, **kwargs)
+        _fake_popen_instances.append(self)
+
+
+def test_タイムアウト時に子プロセスがkillされる(monkeypatch, tmp_path):
+    """On timeout, subprocess.Popen.kill() must be called at least once (F1 Red).
+
+    The current implementation uses subprocess.run, which does NOT call Popen
+    directly.  Therefore this test is expected to FAIL (Red) until F1 is
+    implemented with subprocess.Popen + kill().
+    """
+    # Arrange: clear the tracking list and monkeypatch Popen
+    _fake_popen_instances.clear()
+    monkeypatch.setattr("clade_parallel.runner.subprocess.Popen", _TrackingFakePopen)
+
+    manifest = _make_manifest(tmp_path, SINGLE_TASK)
+
+    # Act: run_manifest should handle the timeout internally via Popen
+    result = run_manifest(manifest)
+
+    # Assert: at least one FakePopen was created and kill() was called
+    assert len(_fake_popen_instances) >= 1, "Popen was never called"
+    popen_instance = _fake_popen_instances[0]
+    assert popen_instance.kill_call_count >= 1, (
+        f"Expected kill() to be called at least once, "
+        f"but kill_call_count={popen_instance.kill_call_count}"
+    )
+
+    # The timed-out task should be recorded as timed_out=True
+    assert len(result.results) == 1
+    assert result.results[0].timed_out is True
+
+
+# ---------------------------------------------------------------------------
+# T13 F2: Multiple RunnerError → only first one is propagated (Red phase)
+# ---------------------------------------------------------------------------
+
+
+def test_複数タスクがRunnerErrorを起こしても最初の1件のみ送出される(
+    monkeypatch, tmp_path
+):
+    """When _execute_task raises RunnerError for both tasks, run_manifest must raise
+    exactly one RunnerError and silently suppress the second one (F2 Red).
+
+    The current implementation has ``else: raise exc`` at runner.py:L233 which
+    re-raises the second RunnerError when runner_error is already set.  This
+    means the second RunnerError surfaces instead of the first being propagated.
+    The desired behavior is: first RunnerError is kept, subsequent RunnerErrors
+    are suppressed, and only the first one is raised after the loop.
+    """
+    import clade_parallel.runner as runner_module
+
+    # Track how many times _execute_task was invoked
+    call_counts: list[int] = [0]
+    raised_errors: list[RunnerError] = []
+
+    def fake_execute_task(task: Any, claude_exe: str) -> TaskResult:
+        """Raise a distinct RunnerError for each call."""
+        idx = call_counts[0]
+        call_counts[0] += 1
+        err = RunnerError(f"runner error #{idx + 1} for task {task.id!r}")
+        raised_errors.append(err)
+        raise err
+
+    monkeypatch.setattr(runner_module, "_execute_task", fake_execute_task)
+
+    manifest = _make_manifest(tmp_path, MINIMAL_TWO_TASKS)
+
+    # Act + Assert: exactly one RunnerError must bubble up
+    with pytest.raises(RunnerError) as exc_info:
+        run_manifest(manifest)
+
+    propagated_message = str(exc_info.value)
+
+    # The propagated RunnerError must be the FIRST one (runner error #1).
+    # Under the current buggy implementation the second RunnerError is re-raised
+    # via ``else: raise exc``, so the message will contain "#2" instead of "#1",
+    # causing this assertion to fail (Red).
+    assert "runner error #1" in propagated_message, (
+        f"Expected the FIRST RunnerError to be propagated, "
+        f"but got: {propagated_message!r}. "
+        f"All raised errors: {[str(e) for e in raised_errors]}"
+    )

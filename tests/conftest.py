@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -29,7 +29,7 @@ def manifest_file(tmp_path: Path):
 
 @pytest.fixture
 def fake_claude_runner(monkeypatch):
-    """Return a factory that installs a fake subprocess.run for runner tests.
+    """Return a factory that installs a fake subprocess.Popen for runner tests.
 
     Usage::
 
@@ -45,15 +45,15 @@ def fake_claude_runner(monkeypatch):
         returncode (int):       Exit code returned by the fake process. Default 0.
         stdout (str):           Captured stdout. Default "".
         stderr (str):           Captured stderr. Default "".
-        exception (Exception):  If set, fake_run raises this instead of returning.
-        sleep_sec (float):      Seconds to sleep before returning/raising. Default 0.
+        exception (Exception):  If set, Popen() raises this instead of returning.
+        sleep_sec (float):      Seconds to sleep before communicate() returns. Default 0.
         record_thread (bool):   Whether to record the calling thread's ident (default True).
 
     Returns a recorder dict with:
         calls (list[dict]):     Per-call outcome specs consumed in order.
         thread_ids (list[int]): Thread idents for each call (if record_thread is True).
         call_count (int):       Total number of calls made.
-        call_args (list):       Full (args, kwargs) of each subprocess.run call.
+        call_args (list):       Full (args, kwargs) of each Popen() call.
     """
 
     def install(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -66,7 +66,46 @@ def fake_claude_runner(monkeypatch):
         call_index_lock = threading.Lock()
         call_index = [0]
 
-        def fake_run(*args: Any, **kwargs: Any) -> MagicMock:
+        class FakePopenInstance:
+            """Fake Popen instance returned by the patched Popen constructor."""
+
+            def __init__(
+                self,
+                cmd: list[str],
+                spec: dict[str, Any],
+                *,
+                sleep_sec: float,
+            ) -> None:
+                self._cmd = cmd
+                self._spec = spec
+                self._sleep_sec = sleep_sec
+                self.returncode: int | None = spec.get("returncode", 0)
+                self.pid: int = 0
+                self._communicate_call_count: int = 0
+
+            def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+                """Return stdout/stderr after optional sleep; raise on spec exception.
+
+                TimeoutExpired is raised only on the first call so that the
+                kill() + communicate() flush sequence in _execute_task works
+                correctly (second call returns empty buffers).
+                """
+                self._communicate_call_count += 1
+                if self._sleep_sec > 0:
+                    time.sleep(self._sleep_sec)
+                exc = self._spec.get("exception")
+                # Raise the spec exception only on the first communicate() call.
+                # On subsequent calls (post-kill flush), return empty strings.
+                if exc is not None and self._communicate_call_count == 1:
+                    raise exc
+                stdout: str = self._spec.get("stdout", "")
+                stderr: str = self._spec.get("stderr", "")
+                return (stdout, stderr)
+
+            def kill(self) -> None:
+                """No-op kill for fake process."""
+
+        def fake_popen(*args: Any, **kwargs: Any) -> FakePopenInstance:
             # Determine which outcome spec to use (thread-safe).
             with call_index_lock:
                 idx = call_index[0]
@@ -74,11 +113,7 @@ def fake_claude_runner(monkeypatch):
 
             spec: dict[str, Any] = outcomes[idx] if idx < len(outcomes) else {}
 
-            sleep_sec: float = spec.get("sleep_sec", 0.0)
-            if sleep_sec > 0:
-                time.sleep(sleep_sec)
-
-            # Record invocation metadata.
+            # Record invocation metadata before sleeping.
             thread_ident = threading.get_ident()
             with call_index_lock:
                 recorder["call_count"] += 1
@@ -86,19 +121,16 @@ def fake_claude_runner(monkeypatch):
                 recorder["call_args"].append((args, kwargs))
                 recorder["calls"].append(spec)
 
+            # FileNotFoundError is raised at Popen() construction time.
             exc = spec.get("exception")
-            if exc is not None:
+            if isinstance(exc, FileNotFoundError):
                 raise exc
 
-            result = MagicMock()
-            result.returncode = spec.get("returncode", 0)
-            result.stdout = spec.get("stdout", "")
-            result.stderr = spec.get("stderr", "")
-            return result
+            cmd: list[str] = args[0] if args else kwargs.get("args", [])
+            sleep_sec: float = spec.get("sleep_sec", 0.0)
+            return FakePopenInstance(cmd, spec, sleep_sec=sleep_sec)
 
-        import subprocess
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
         return recorder
 
     return install

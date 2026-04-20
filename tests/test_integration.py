@@ -201,22 +201,27 @@ class TestRaceConditionGuard:
         counter = 0
         lock = threading.Lock()
 
-        def fake_run(*args: Any, **kwargs: Any) -> MagicMock:
-            """Simulate subprocess.run with a short sleep and atomic counter update."""
-            time.sleep(0.1)
-            nonlocal counter
-            with lock:
-                counter += 1
+        class FakePopenCounter:
+            """Fake Popen that increments a shared counter and returns exit 0."""
 
-            result = MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.returncode: int | None = 0
+                self.pid: int = 0
+
+            def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+                """Simulate communicate with a short sleep and atomic counter update."""
+                time.sleep(0.1)
+                nonlocal counter
+                with lock:
+                    counter += 1
+                return ("", "")
+
+            def kill(self) -> None:
+                """No-op kill."""
 
         import subprocess
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(subprocess, "Popen", FakePopenCounter)
 
         manifest_path = _write_manifest(tmp_path)
         manifest = load_manifest(manifest_path)

@@ -458,3 +458,78 @@ def test_ManifestにはパスがPathとして格納される(manifest_file):
     result = load_manifest(path)
     assert isinstance(result.path, Path)
     assert result.path.resolve() == path.resolve()
+
+
+# ---------------------------------------------------------------------------
+# T13 F3: Blocked env keys raise ManifestError (Red phase)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "blocked_key",
+    [
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "LD_AUDIT",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "PYTHONPATH",
+    ],
+    ids=[
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "LD_AUDIT",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "PYTHONPATH",
+    ],
+)
+def test_危険な環境変数キーはManifestErrorを送出する(blocked_key, manifest_file):
+    """A task whose env contains a blocked key (e.g. LD_PRELOAD) raises ManifestError.
+
+    This is the Red (failing) test for F3.  The current implementation does NOT
+    validate env keys, so ManifestError is NOT raised and the test will FAIL
+    until F3 is implemented in manifest.py._parse_task().
+    """
+    content = f"""\
+---
+clade_plan_version: "0.1"
+name: blocked-env-test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    env:
+      {blocked_key}: "injected_value"
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+def test_通常の環境変数キーは許可される(manifest_file):
+    """Normal env keys (FOO, MY_VAR) do not raise ManifestError (F3 allowlist check).
+
+    This test must PASS both before and after F3 implementation; it validates
+    the negative case to prevent over-blocking.
+    """
+    content = """\
+---
+clade_plan_version: "0.1"
+name: safe-env-test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    env:
+      FOO: bar
+      MY_VAR: "hello world"
+---
+"""
+    path = manifest_file(content)
+    # Should not raise — normal keys are always permitted
+    result = load_manifest(path)
+    task = result.tasks[0]
+    assert task.env.get("FOO") == "bar"
+    assert task.env.get("MY_VAR") == "hello world"

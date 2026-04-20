@@ -11,18 +11,34 @@ from pathlib import Path
 
 import yaml
 
+from ._exceptions import CladeParallelError
+
 # ---------------------------------------------------------------------------
 # Public constants
 # ---------------------------------------------------------------------------
 
 SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1"})
 
+# Environment variable keys that are blocked for security reasons.
+# These keys can be used to inject malicious code via dynamic linker or
+# interpreter path manipulation.
+_BLOCKED_ENV_KEYS: frozenset[str] = frozenset(
+    {
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "LD_AUDIT",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "PYTHONPATH",
+    }
+)
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
 
 
-class ManifestError(Exception):
+class ManifestError(CladeParallelError):
     """Raised when a manifest file is invalid or cannot be loaded."""
 
 
@@ -114,13 +130,12 @@ def _extract_frontmatter(text: str) -> str:
     return "\n".join(lines[1:closing_index])
 
 
-def _parse_task(raw: object, default_cwd: Path, default_agent_prompt: str) -> Task:
+def _parse_task(raw: object, default_cwd: Path) -> Task:
     """Parse a single raw task dict into a Task dataclass.
 
     Args:
         raw: The raw object from YAML; expected to be a dict.
         default_cwd: Fallback working directory if the task omits ``cwd``.
-        default_agent_prompt: Unused here; each task builds its own default.
 
     Returns:
         A validated, frozen Task instance.
@@ -155,7 +170,17 @@ def _parse_task(raw: object, default_cwd: Path, default_agent_prompt: str) -> Ta
     # Optional fields with defaults.
     prompt: str = raw.get("prompt", f"/agent-{agent}")
     timeout_sec: int = int(raw.get("timeout_sec", 900))
-    env: dict[str, str] = dict(raw.get("env", {}))
+
+    # Validate env keys against the blocklist before constructing the dict.
+    raw_env: dict[str, str] = raw.get("env", {}) or {}
+    for key in raw_env:
+        if key in _BLOCKED_ENV_KEYS:
+            raise ManifestError(
+                f"Task '{task_id}': env key '{key}' is not allowed"
+                " for security reasons."
+            )
+    env: dict[str, str] = dict(raw_env)
+
     cwd_raw = raw.get("cwd")
     cwd: Path = Path(cwd_raw).resolve() if cwd_raw is not None else default_cwd
 
@@ -237,7 +262,7 @@ def load_manifest(path: str | Path) -> Manifest:
 
     default_cwd = resolved.parent.resolve()
 
-    tasks = tuple(_parse_task(raw_task, default_cwd, "") for raw_task in raw_tasks)
+    tasks = tuple(_parse_task(raw_task, default_cwd) for raw_task in raw_tasks)
 
     return Manifest(
         path=resolved,
