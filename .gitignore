@@ -1,0 +1,8 @@
+﻿# Clade - ローカル設定（機械固有パスを含む）
+.claude/settings.local.json
+# Clade - セッション記録
+.claude/memory/sessions/
+# Clade - 観察データ
+.claude/instincts/raw/
+# Clade - クラスタデータ
+.claude/instincts/clusters/

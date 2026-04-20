@@ -1,0 +1,139 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node .claude/hooks/write-file.js*)",
+      "Bash(node **/.claude/hooks/write-file.js*)",
+      "Bash(node .claude/hooks/apply-diff.js*)",
+      "Bash(node **/.claude/hooks/apply-diff.js*)",
+      "Bash(node .claude/hooks/write-report.js*)",
+      "Bash(node **/.claude/hooks/write-report.js*)",
+      "Bash(node .claude/hooks/record-approval.js*)",
+      "Bash(node **/.claude/hooks/record-approval.js*)",
+      "Bash(node .claude/hooks/clear-file-history.js*)",
+      "Bash(node **/.claude/hooks/clear-file-history.js*)",
+      "Bash(node .claude/hooks/enable-sandbox.js*)",
+      "Bash(node **/.claude/hooks/enable-sandbox.js*)",
+      "Bash(node .claude/hooks/manage-playwright-origins.js*)",
+      "Bash(node **/.claude/hooks/manage-playwright-origins.js*)",
+      "Bash(node .claude/hooks/clear-tmp-file.js*)",
+      "Bash(node **/.claude/hooks/clear-tmp-file.js*)",
+      "Bash(gh issue list*)",
+      "Bash(gh issue view*)",
+      "Bash(gh pr list*)",
+      "Bash(gh pr view*)",
+      "Bash(gh run list*)",
+      "Bash(gh run view*)",
+      "Bash(gh repo view*)",
+      "Bash(gh auth status*)",
+      "Read(**)",
+      "Glob(**)",
+      "Grep(**)",
+      "Write(**)",
+      "Bash(git -C *)",
+      "Bash(git checkout*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git rev-parse*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(**/.env)",
+      "Read(**.env.*)"
+    ]
+  },
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ]
+    },
+    "memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ]
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--allowed-origins",
+        "http://localhost:*;https://localhost:*;http://127.0.0.1:*;https://127.0.0.1:*"
+      ]
+    }
+  },
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/pre-compact.js"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/stop.js"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/pre-tool.js"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/post-tool.js"
+          }
+        ]
+      }
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": false,
+    "excludedCommands": [],
+    "network": {
+      "allowUnixSockets": [],
+      "allowAllUnixSockets": false,
+      "allowLocalBinding": false,
+      "allowedDomains": []
+    },
+    "enableWeakerNestedSandbox": true
+  }
+}

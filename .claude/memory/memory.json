@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "lastUpdated": "",
+  "projects": {},
+  "globalPatterns": {
+    "skillsPromoted": [],
+    "rulesPromoted": []
+  },
+  "notes": "このファイルは /end-session や /promote コマンドで自動更新されます"
+}
