@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clade-parallel"
+version = "0.1.0"
+description = "Run read-only Clade agents in parallel from a YAML-frontmatter Markdown manifest."
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0"]
+
+[project.scripts]
+clade-parallel = "clade_parallel.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "ruff",
+    "black",
+    "mypy",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 88
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true

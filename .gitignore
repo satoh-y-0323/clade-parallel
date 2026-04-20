@@ -6,3 +6,18 @@
 .claude/instincts/raw/
 # Clade - クラスタデータ
 .claude/instincts/clusters/
+# Clade - 一時ファイル（承認コメント・サブエージェント中間成果物）
+.claude/tmp/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
