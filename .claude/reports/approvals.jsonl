@@ -11,3 +11,4 @@
 {"timestamp":"2026-04-20T15:31:15.931Z","reportFile":"plan-report-20260421-003014.md","type":"plan","approved":true,"comment":""}
 {"timestamp":"2026-04-20T15:42:43.697Z","reportFile":"test-report-20260421-004152.md","type":"test","approved":true,"comment":""}
 {"timestamp":"2026-04-20T16:13:19.285Z","reportFile":"test-report-20260421-011220.md","type":"test","approved":true,"comment":""}
+{"timestamp":"2026-04-20T16:18:07.475Z","reportFile":"code-review-report-20260421-011655.md","type":"code-review","approved":true,"comment":"新規ブロッカーゼロ。中 1 件（except Exception 時の子プロセス後始末）は v0.2 送り、低 2 件もテストコードの軽微な改善として v0.2 ロードマップへ。"}
