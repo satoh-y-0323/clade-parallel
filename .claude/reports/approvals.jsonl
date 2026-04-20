@@ -6,3 +6,4 @@
 {"timestamp":"2026-04-20T14:27:32.773Z","reportFile":"test-report-20260420-232649.md","type":"test","approved":true,"comment":""}
 {"timestamp":"2026-04-20T14:40:28.158Z","reportFile":"test-report-20260420-233812.md","type":"test","approved":true,"comment":"既存 slow テスト（test_runner.py）の問題は T10 code-reviewer に委ねる方針で承認。"}
 {"timestamp":"2026-04-20T14:45:20.409Z","reportFile":"test-report-20260420-234424.md","type":"test","approved":true,"comment":""}
+{"timestamp":"2026-04-20T15:17:00.707Z","reportFile":"code-review-report-20260420-234958.md","type":"code-review","approved":true,"comment":"ブロッカー 2 件・推奨 4 件は T12（planner 更新計画）で修正タスク化し、今日中に修正サイクル（developer + tester）を回す方針で承認。"}
