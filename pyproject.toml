@@ -24,6 +24,7 @@ dev = [
     "ruff",
     "black",
     "mypy",
+    "types-PyYAML",
 ]
 
 [tool.setuptools.packages.find]
