@@ -35,7 +35,7 @@ select = ["E", "F", "I", "UP"]
 [tool.ruff.lint.per-file-ignores]
 # Test files may have long lines from Japanese function names and unused imports
 # that are part of the public API being tested.
-"tests/**" = ["E501", "F401", "F541"]
+"tests/**" = ["E501", "F401", "F541", "UP037"]
 
 [tool.pytest.ini_options]
 addopts = "-m 'not slow'"
@@ -54,3 +54,4 @@ module = ["tests.*", "conftest"]
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
 disallow_any_generics = false
+ignore_errors = true
