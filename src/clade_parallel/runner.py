@@ -124,6 +124,8 @@ def _execute_task(task: Task, claude_exe: str) -> TaskResult:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",  # Avoid cp932 decoding errors on Japanese Windows
+            errors="replace",  # Replace invalid bytes with U+FFFD instead of raising
         )
     except FileNotFoundError as exc:
         raise RunnerError(f"claude executable not found: {claude_exe!r}") from exc
