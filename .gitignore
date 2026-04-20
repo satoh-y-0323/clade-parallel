@@ -1,13 +1,5 @@
-﻿# Clade - ローカル設定（機械固有パスを含む）
-.claude/settings.local.json
-# Clade - セッション記録
-.claude/memory/sessions/
-# Clade - 観察データ
-.claude/instincts/raw/
-# Clade - クラスタデータ
-.claude/instincts/clusters/
-# Clade - 一時ファイル（承認コメント・サブエージェント中間成果物）
-.claude/tmp/
+﻿# Clade framework / development environment (local only, not committed)
+.claude/
 
 # Python
 __pycache__/

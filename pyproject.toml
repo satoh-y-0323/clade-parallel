@@ -9,6 +9,12 @@ description = "Run read-only Clade agents in parallel from a YAML-frontmatter Ma
 requires-python = ">=3.10"
 dependencies = ["PyYAML>=6.0"]
 
+[project.urls]
+Homepage = "https://github.com/satoh-y-0323/clade-parallel"
+Repository = "https://github.com/satoh-y-0323/clade-parallel"
+"Bug Tracker" = "https://github.com/satoh-y-0323/clade-parallel/issues"
+Changelog = "https://github.com/satoh-y-0323/clade-parallel/blob/main/CHANGELOG.md"
+
 [project.scripts]
 clade-parallel = "clade_parallel.cli:main"
 
