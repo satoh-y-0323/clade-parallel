@@ -922,7 +922,9 @@ tasks:
     task = manifest.tasks[0]
 
     worktree_setup = getattr(runner_module, "_worktree_setup")
-    worktree_path = worktree_setup(git_repo, task)
+    result = worktree_setup(git_repo, task)
+    # v0.4: _worktree_setup returns (Path, str) tuple; extract the path.
+    worktree_path = result[0] if isinstance(result, tuple) else result
 
     # The returned path must exist on disk
     assert isinstance(worktree_path, Path)
@@ -1014,7 +1016,9 @@ tasks:
 
     # First create a worktree to clean up.
     worktree_setup = getattr(runner_module, "_worktree_setup")
-    worktree_path = worktree_setup(git_repo, task)
+    result = worktree_setup(git_repo, task)
+    # v0.4: _worktree_setup returns (Path, str) tuple; extract the path.
+    worktree_path = result[0] if isinstance(result, tuple) else result
     assert worktree_path.exists(), "Precondition: worktree must exist before cleanup"
 
     worktree_cleanup = getattr(runner_module, "_worktree_cleanup")

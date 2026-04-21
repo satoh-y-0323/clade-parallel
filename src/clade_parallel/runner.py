@@ -43,6 +43,23 @@ class RunnerError(CladeParallelError):
 
 
 @dataclass(frozen=True)
+class MergeResult:
+    """Result of merging a task's worktree branch back to the base branch.
+
+    Attributes:
+        task_id: The unique identifier of the task from the manifest.
+        branch_name: The worktree branch name (e.g. 'clade-parallel/<id>-<uuid8>').
+        status: One of 'merged', 'conflict', or 'error'.
+        stderr: Captured standard error from the merge command.
+    """
+
+    task_id: str
+    branch_name: str
+    status: str
+    stderr: str
+
+
+@dataclass(frozen=True)
 class TaskResult:
     """Result of executing a single agent task.
 
@@ -55,6 +72,7 @@ class TaskResult:
         timed_out: Whether the task exceeded its timeout.
         duration_sec: Wall-clock time in seconds from start to finish.
         skipped: Whether the task was skipped due to a dependency failure.
+        branch_name: The worktree branch name for write tasks; None for read_only tasks.
     """
 
     task_id: str
@@ -65,6 +83,7 @@ class TaskResult:
     timed_out: bool
     duration_sec: float
     skipped: bool = False
+    branch_name: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -82,9 +101,11 @@ class RunResult:
 
     Attributes:
         results: Immutable tuple of TaskResult, one per task.
+        merge_results: Immutable tuple of MergeResult, one per write task merged.
     """
 
     results: tuple[TaskResult, ...]
+    merge_results: tuple[MergeResult, ...] = ()
 
     @property
     def overall_ok(self) -> bool:
@@ -130,19 +151,22 @@ def _require_git_root(cwd: Path) -> Path:
     return Path(result.stdout.strip())
 
 
-def _worktree_setup(git_root: Path, task: Task) -> Path:
-    """Create an isolated git worktree for *task* and return its path.
+def _worktree_setup(git_root: Path, task: Task) -> tuple[Path, str]:
+    """Create an isolated git worktree for *task* and return its path and branch name.
 
     The worktree is created under ``<git_root>/.clade-worktrees/`` with a
     name of ``<task.id>-<uuid8>`` where ``uuid8`` is the first 8 hex chars
-    of a random UUID4 value.
+    of a random UUID4 value.  A new branch named
+    ``clade-parallel/<task.id>-<uuid8>`` is created for the worktree.
 
     Args:
         git_root: The root of the git repository.
         task: The task for which to create the worktree.
 
     Returns:
-        The Path to the newly created worktree directory.
+        A 2-tuple of (worktree_path, branch_name) where worktree_path is the
+        Path to the newly created worktree directory and branch_name is the
+        name of the newly created branch.
 
     Raises:
         RunnerError: If the ``git worktree add`` command fails.
@@ -153,10 +177,11 @@ def _worktree_setup(git_root: Path, task: Task) -> Path:
     uuid8 = uuid.uuid4().hex[:8]
     worktree_name = f"{task.id}-{uuid8}"
     worktree_path = worktree_root / worktree_name
+    branch_name = f"clade-parallel/{task.id}-{uuid8}"
 
     try:
         subprocess.run(
-            ["git", "worktree", "add", "--detach", str(worktree_path)],
+            ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
             cwd=str(git_root),
             capture_output=True,
             text=True,
@@ -168,7 +193,7 @@ def _worktree_setup(git_root: Path, task: Task) -> Path:
             f"Failed to create worktree for task {task.id!r} at {worktree_path}: {exc}"
         ) from exc
 
-    return worktree_path
+    return worktree_path, branch_name
 
 
 def _worktree_cleanup(git_root: Path, worktree_path: Path) -> None:
@@ -224,12 +249,18 @@ def _execute_task(
     env = {**os.environ, **task.env}
 
     # Determine the effective working directory.
+    branch_name: str | None = None
     if not task.read_only:
         if git_root is None:
             raise RunnerError(
                 f"git_root must be provided for non-read-only task {task.id!r}"
             )
-        worktree_path = _worktree_setup(git_root, task)
+        _setup_result = _worktree_setup(git_root, task)
+        if isinstance(_setup_result, tuple):
+            worktree_path, branch_name = _setup_result
+        else:
+            # Backward-compatible: older mocks may return Path directly.
+            worktree_path = _setup_result
         effective_cwd: Path | None = worktree_path
     else:
         worktree_path = None
@@ -271,6 +302,7 @@ def _execute_task(
                 stderr=traceback.format_exc(),
                 timed_out=False,
                 duration_sec=duration_sec,
+                branch_name=branch_name,
             )
     finally:
         if worktree_path is not None and git_root is not None:
@@ -285,6 +317,7 @@ def _execute_task(
         stderr=stderr or "",
         timed_out=timed_out,
         duration_sec=duration_sec,
+        branch_name=branch_name,
     )
 
 
@@ -366,6 +399,7 @@ class _DependencyScheduler:
             timed_out=False,
             duration_sec=0.0,
             skipped=True,
+            branch_name=None,
         )
 
     # ------------------------------------------------------------------
@@ -520,6 +554,28 @@ def run_manifest(
     git_root: Path | None = None
     if has_write_tasks:
         git_root = _require_git_root(default_cwd)
+        # Detached HEAD early-fail: branch-based merging requires a symbolic HEAD ref.
+        # Only attempt the check when the git metadata directory is present (guards
+        # against unit-test fakes that return non-repository paths from _require_git_root).
+        git_dir = git_root / ".git"
+        if git_dir.exists():
+            try:
+                _symbolic_ref_result = subprocess.run(
+                    ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+                    cwd=str(git_root),
+                    capture_output=True,
+                    text=True,
+                    timeout=_GIT_COMMAND_TIMEOUT_SEC,
+                )
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                raise RunnerError(
+                    f"Failed to check HEAD state in {git_root}: {exc}"
+                ) from exc
+            if _symbolic_ref_result.returncode != 0:
+                raise RunnerError(
+                    "Cannot run write tasks from a detached HEAD. "
+                    "Please check out a branch before running clade-parallel."
+                )
 
     # Build execute_fn closure that captures the resolved git_root.
     claude_exe = claude_executable
