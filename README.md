@@ -132,6 +132,16 @@ clade-parallel --help
 - **No `writes:` / `depends_on:` declaration checks**: v0.1 does not perform static
   conflict analysis. These declarations will be added in v0.2.
 
+- **Sensitive file warnings in `claude -p` mode**: When a task's working
+  directory contains `.env` files, SSH private keys, or other sensitive
+  files, `claude -p` emits a sensitive-file warning and the agent may
+  terminate before producing output. Workaround: run tasks in a working
+  directory that does not contain such files (e.g., point `cwd` at a
+  clean subdirectory), or add the files to `.gitignore` / move them
+  outside the repository root before running clade-parallel. Worktree
+  isolation (v0.3) will address this by giving each task its own clean
+  directory.
+
 - **`env` block-list**: The following keys are silently rejected from `task.env` for
   security reasons: `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`,
   `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `PYTHONPATH`.
