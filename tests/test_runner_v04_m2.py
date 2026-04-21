@@ -787,7 +787,7 @@ def test_merge_write_branches_skippedタスクはスキップされる(
         _make_task_result("task-b", skipped=True, branch_name=None),
     )
 
-    results = merge_all(tmp_path, "main", task_results)
+    merge_all(tmp_path, "main", task_results)
 
     assert "task-b" not in merged_task_ids, (
         f"Skipped task-b should not be merged. Merged: {merged_task_ids}"
@@ -823,7 +823,7 @@ def test_merge_write_branches_timed_outタスクはスキップされる(
         _make_task_result("task-b", timed_out=True, branch_name="clade-parallel/task-b-0002"),
     )
 
-    results = merge_all(tmp_path, "main", task_results)
+    merge_all(tmp_path, "main", task_results)
 
     assert "task-b" not in merged_task_ids, (
         f"Timed-out task-b should not be merged. Merged: {merged_task_ids}"
@@ -859,7 +859,7 @@ def test_merge_write_branches_branch_nameがNoneのタスクはスキップさ�
         _make_task_result("read-task", returncode=0, branch_name=None),
     )
 
-    results = merge_all(tmp_path, "main", task_results)
+    merge_all(tmp_path, "main", task_results)
 
     assert "read-task" not in merged_task_ids, (
         f"read-task (branch_name=None) should not be merged. Merged: {merged_task_ids}"
