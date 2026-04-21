@@ -1,7 +1,7 @@
 # ADR-003: Defer worktree isolation to v0.3; rely on timestamped filenames in v0.1
 
 - **Date:** 2026-04-20
-- **Status:** Accepted
+- **Status:** Superseded (by ADR-007, ADR-009 — v0.3 で worktree 隔離が実現。延期が解消された)
 
 ## Context
 
