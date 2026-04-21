@@ -1,7 +1,7 @@
 # ADR-009: `read_only: false` タスクの worktree 隔離方針
 
 - **Date:** 2026-04-21
-- **Status:** Accepted
+- **Status:** Superseded by ADR-010
 
 ## Context
 
