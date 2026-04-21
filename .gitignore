@@ -13,3 +13,6 @@ dist/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# clade-parallel isolated worktrees (v0.3)
+.clade-worktrees/
