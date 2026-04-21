@@ -7,6 +7,7 @@ capturing stdout/stderr and timing for each task.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 import traceback
@@ -15,6 +16,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from ._exceptions import CladeParallelError
 from .manifest import Manifest, Task, load_manifest
@@ -27,6 +29,7 @@ _DEFAULT_CLAUDE_EXECUTABLE = "claude"
 _CLAUDE_PROMPT_FLAG = "-p"
 _WORKTREE_ROOT_NAME = ".clade-worktrees"
 _GIT_COMMAND_TIMEOUT_SEC = 30
+_CONFLICT_STDERR_MAX_CHARS = 2000
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -55,7 +58,7 @@ class MergeResult:
 
     task_id: str
     branch_name: str
-    status: str
+    status: Literal["merged", "conflict", "error", "pending"]
     stderr: str
 
 
@@ -196,7 +199,32 @@ def _worktree_setup(git_root: Path, task: Task) -> tuple[Path, str]:
     return worktree_path, branch_name
 
 
-def _resolve_merge_base_branch(cwd: Path, timeout: int = _GIT_COMMAND_TIMEOUT_SEC) -> str:
+def _sanitize_git_stderr(text: str) -> str:
+    """Sanitize git stderr output by removing ANSI escapes and control characters.
+
+    Removes ANSI escape sequences (``\\x1b[...m`` form), control characters
+    in the range ``\\x00``-``\\x1f`` (preserving ``\\n``, ``\\r``, ``\\t``),
+    and truncates output longer than ``_CONFLICT_STDERR_MAX_CHARS`` characters.
+
+    Args:
+        text: The raw git stderr string to sanitize.
+
+    Returns:
+        The sanitized string, at most ``_CONFLICT_STDERR_MAX_CHARS`` characters.
+    """
+    # Remove ANSI escape sequences (e.g. \x1b[31m, \x1b[0m)
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+    # Remove control characters except \n (0x0a), \r (0x0d), \t (0x09)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    # Truncate to max length
+    if len(text) > _CONFLICT_STDERR_MAX_CHARS:
+        text = text[:_CONFLICT_STDERR_MAX_CHARS]
+    return text
+
+
+def _resolve_merge_base_branch(
+    cwd: Path, timeout: int = _GIT_COMMAND_TIMEOUT_SEC
+) -> str:
     """Return the current branch name using ``git symbolic-ref``.
 
     Args:
@@ -222,6 +250,28 @@ def _resolve_merge_base_branch(cwd: Path, timeout: int = _GIT_COMMAND_TIMEOUT_SE
             "Please check out a branch before running clade-parallel."
         )
     return result.stdout.strip()
+
+
+def _setup_worktree(git_root: Path, task: Task) -> tuple[Path, str | None]:
+    """Invoke ``_worktree_setup`` and normalise the return value to a 2-tuple.
+
+    ``_worktree_setup`` always returns ``tuple[Path, str]``.  Legacy test mocks
+    may return a bare ``Path``; this wrapper handles both forms so that
+    ``_execute_task`` can use a plain tuple-unpack without an ``isinstance`` check.
+
+    Args:
+        git_root: The git repository root.
+        task: The task for which to create the worktree.
+
+    Returns:
+        A 2-tuple of (worktree_path, branch_name).  ``branch_name`` is None
+        only when a legacy mock returns a bare Path.
+    """
+    result = _worktree_setup(git_root, task)
+    if isinstance(result, tuple):
+        return result
+    # Legacy mock returned a bare Path — treat branch_name as None.
+    return result, None  # type: ignore[return-value]
 
 
 def _abort_merge(cwd: Path, timeout: int = _GIT_COMMAND_TIMEOUT_SEC) -> None:
@@ -307,7 +357,14 @@ def _merge_single_branch(
     """
     try:
         result = subprocess.run(
-            ["git", "merge", "--no-ff", "--no-edit", branch_name],
+            [
+                "git",
+                "merge",
+                "--no-ff",
+                "-m",
+                f"Merge clade-parallel task {task_id}",
+                branch_name,
+            ],
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -320,7 +377,7 @@ def _merge_single_branch(
                 task_id=task_id,
                 branch_name=branch_name,
                 status="merged",
-                stderr=result.stderr or "",
+                stderr=_sanitize_git_stderr(result.stderr or ""),
             )
         else:
             # Non-zero returncode → conflict
@@ -329,17 +386,8 @@ def _merge_single_branch(
                 task_id=task_id,
                 branch_name=branch_name,
                 status="conflict",
-                stderr=result.stderr or "",
+                stderr=_sanitize_git_stderr(result.stderr or ""),
             )
-    except subprocess.CalledProcessError as exc:
-        _abort_merge(cwd)
-        stderr = exc.stderr if isinstance(exc.stderr, str) else str(exc)
-        return MergeResult(
-            task_id=task_id,
-            branch_name=branch_name,
-            status="conflict",
-            stderr=stderr,
-        )
     except (subprocess.TimeoutExpired, OSError) as exc:
         _abort_merge(cwd)
         return MergeResult(
@@ -493,12 +541,7 @@ def _execute_task(
             raise RunnerError(
                 f"git_root must be provided for non-read-only task {task.id!r}"
             )
-        _setup_result = _worktree_setup(git_root, task)
-        if isinstance(_setup_result, tuple):
-            worktree_path, branch_name = _setup_result
-        else:
-            # Backward-compatible: older mocks may return Path directly.
-            worktree_path = _setup_result
+        worktree_path, branch_name = _setup_worktree(git_root, task)
         effective_cwd: Path | None = worktree_path
     else:
         worktree_path = None
@@ -790,30 +833,11 @@ def run_manifest(
     # must be resolvable before submitting any work.
     has_write_tasks = any(not t.read_only for t in tasks)
     git_root: Path | None = None
+    base_branch: str | None = None
     if has_write_tasks:
         git_root = _require_git_root(default_cwd)
-        # Detached HEAD early-fail: branch-based merging requires a symbolic HEAD ref.
-        # Only attempt the check when the git metadata directory is present (guards
-        # against unit-test fakes that return non-repository paths from _require_git_root).
-        git_dir = git_root / ".git"
-        if git_dir.exists():
-            try:
-                _symbolic_ref_result = subprocess.run(
-                    ["git", "symbolic-ref", "--short", "-q", "HEAD"],
-                    cwd=str(git_root),
-                    capture_output=True,
-                    text=True,
-                    timeout=_GIT_COMMAND_TIMEOUT_SEC,
-                )
-            except (subprocess.TimeoutExpired, OSError) as exc:
-                raise RunnerError(
-                    f"Failed to check HEAD state in {git_root}: {exc}"
-                ) from exc
-            if _symbolic_ref_result.returncode != 0:
-                raise RunnerError(
-                    "Cannot run write tasks from a detached HEAD. "
-                    "Please check out a branch before running clade-parallel."
-                )
+        # Detached HEAD early-fail: consolidated into _resolve_merge_base_branch.
+        base_branch = _resolve_merge_base_branch(default_cwd)
 
     # Build execute_fn closure that captures the resolved git_root.
     claude_exe = claude_executable
@@ -827,8 +851,7 @@ def run_manifest(
 
     # Post-processing: merge write-task branches back to the base branch.
     merge_results: tuple[MergeResult, ...] = ()
-    if has_write_tasks:
-        base_branch = _resolve_merge_base_branch(default_cwd)
+    if has_write_tasks and base_branch is not None:
         merge_results = _merge_write_branches(default_cwd, base_branch, task_results)
 
     return RunResult(results=task_results, merge_results=merge_results)
