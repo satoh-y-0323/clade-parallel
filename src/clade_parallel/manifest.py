@@ -17,7 +17,7 @@ from ._exceptions import CladeParallelError
 # Public constants
 # ---------------------------------------------------------------------------
 
-SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1", "0.2"})
+SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1", "0.2", "0.3"})
 
 # Environment variable keys that are blocked for security reasons.
 # These keys can be used to inject malicious code via dynamic linker or
@@ -64,6 +64,10 @@ class Task:
             Used by load_manifest() to detect static write-conflicts between
             tasks before execution. This field is optional and defaults to
             an empty tuple for backward compatibility with v0.1 manifests.
+        depends_on: Tuple of task IDs that must complete before this task
+            starts. Duplicates are removed while preserving insertion order.
+            Empty tuple if omitted. load_manifest() validates that all
+            referenced IDs exist and that no cyclic dependency is present.
     """
 
     id: str
@@ -74,6 +78,7 @@ class Task:
     cwd: Path
     env: dict[str, str]
     writes: tuple[str, ...] = ()
+    depends_on: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -201,12 +206,6 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
             f"Task '{task_id}': 'read_only' must be a boolean, got {type(read_only)!r}."
         )
 
-    # v0.1 scope constraint: only read-only tasks are supported.
-    if not read_only:
-        raise ManifestError(
-            f"Task '{task_id}': 'read_only: false' is not supported in v0.1."
-        )
-
     # Optional fields with defaults.
     prompt: str = raw.get("prompt", f"/agent-{agent}")
     timeout_sec: int = int(raw.get("timeout_sec", 900))
@@ -239,6 +238,27 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
         _normalize_write_path(item, task_id, cwd) for item in raw_writes
     )
 
+    # Parse depends_on: must be a list of non-empty strings; duplicates are removed
+    # while preserving insertion order (dict.fromkeys idiom).
+    raw_depends_on = raw.get("depends_on", []) or []
+    if not isinstance(raw_depends_on, list):
+        raise ManifestError(
+            f"Task '{task_id}': 'depends_on' must be a list of strings, "
+            f"got {type(raw_depends_on)!r}."
+        )
+    for item in raw_depends_on:
+        if not isinstance(item, str):
+            raise ManifestError(
+                f"Task '{task_id}': each entry in 'depends_on' must be a string, "
+                f"got {type(item)!r}."
+            )
+        if item == "":
+            raise ManifestError(
+                f"Task '{task_id}': 'depends_on' entry must be a non-empty string."
+            )
+    # Deduplicate while preserving order.
+    depends_on: tuple[str, ...] = tuple(dict.fromkeys(raw_depends_on))
+
     return Task(
         id=task_id,
         agent=agent,
@@ -248,7 +268,96 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
         cwd=cwd,
         env=env,
         writes=writes,
+        depends_on=depends_on,
     )
+
+
+def _check_depends_on_refs(tasks: tuple[Task, ...]) -> None:
+    """Verify that every depends_on reference points to an existing task ID.
+
+    Args:
+        tasks: All parsed tasks from the manifest, in manifest order.
+
+    Raises:
+        ManifestError: If any depends_on value references an undefined task ID.
+            The message lists every undefined ID in sorted order for
+            deterministic output.
+    """
+    known_ids: frozenset[str] = frozenset(t.id for t in tasks)
+    undefined: set[str] = set()
+    for task in tasks:
+        for dep_id in task.depends_on:
+            if dep_id not in known_ids:
+                undefined.add(dep_id)
+
+    if not undefined:
+        return
+
+    sorted_ids = ", ".join(sorted(undefined))
+    raise ManifestError(
+        f"depends_on references undefined task ID(s): {sorted_ids}"
+    )
+
+
+def _check_cyclic_dependencies(tasks: tuple[Task, ...]) -> None:
+    """Detect cyclic dependencies using DFS three-color marking (white/gray/black).
+
+    Colors:
+        white (0): Not yet visited.
+        gray  (1): Currently on the DFS stack (in progress).
+        black (2): Fully processed (no cycle found from this node).
+
+    Args:
+        tasks: All parsed tasks from the manifest, in manifest order.
+
+    Raises:
+        ManifestError: If a cycle is detected. The message includes the cycle
+            path in the form ``A -> B -> C -> A`` for human readability.
+    """
+    # Build adjacency list: task_id -> list of dependency IDs.
+    adjacency: dict[str, list[str]] = {t.id: list(t.depends_on) for t in tasks}
+
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = {task_id: WHITE for task_id in adjacency}
+    # Stack stores (task_id, parent_path) where parent_path is the ordered
+    # list of node IDs from the DFS root to the current node (inclusive).
+    # Using an explicit stack avoids Python recursion depth limits.
+
+    for start_id in adjacency:
+        if color[start_id] != WHITE:
+            continue
+
+        # Each stack entry: (node_id, path_to_node)
+        dfs_stack: list[tuple[str, list[str]]] = [(start_id, [start_id])]
+
+        while dfs_stack:
+            node_id, path = dfs_stack[-1]
+
+            if color[node_id] == WHITE:
+                color[node_id] = GRAY
+
+            # Find the next unprocessed neighbor.
+            neighbors = adjacency.get(node_id, [])
+            found_next = False
+            for neighbor in neighbors:
+                if color[neighbor] == GRAY:
+                    # Back edge detected: reconstruct cycle path.
+                    # Locate where the cycle starts in the current path.
+                    cycle_start_idx = path.index(neighbor)
+                    cycle_path = path[cycle_start_idx:] + [neighbor]
+                    cycle_str = " -> ".join(cycle_path)
+                    raise ManifestError(
+                        f"Cyclic dependency detected: {cycle_str}"
+                    )
+                if color[neighbor] == WHITE:
+                    dfs_stack.append((neighbor, path + [neighbor]))
+                    found_next = True
+                    break
+
+            if not found_next:
+                # All neighbors processed — mark current node black and pop.
+                color[node_id] = BLACK
+                dfs_stack.pop()
 
 
 def _check_writes_conflicts(tasks: tuple[Task, ...]) -> None:
@@ -355,6 +464,8 @@ def load_manifest(path: str | Path) -> Manifest:
 
     tasks = tuple(_parse_task(raw_task, default_cwd) for raw_task in raw_tasks)
 
+    _check_depends_on_refs(tasks)
+    _check_cyclic_dependencies(tasks)
     _check_writes_conflicts(tasks)
 
     return Manifest(
