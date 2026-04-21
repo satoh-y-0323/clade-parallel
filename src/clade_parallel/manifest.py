@@ -98,6 +98,40 @@ class Manifest:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_write_path(raw: object, task_id: str, cwd: Path) -> str:
+    """Normalize a single raw 'writes' path entry to an absolute POSIX string.
+
+    The raw value must be a non-empty string. Relative paths are resolved
+    against the task's working directory. Symbolic links and ``..`` segments
+    are resolved via ``Path.resolve()``. The result is returned as a POSIX
+    string (forward slashes) for cross-platform stable comparison.
+
+    Args:
+        raw: The raw element from the YAML list (expected to be a string).
+        task_id: Identifier of the enclosing task (used in error messages).
+        cwd: The task's resolved working directory (absolute path).
+
+    Returns:
+        An absolute, resolved path string in POSIX form.
+
+    Raises:
+        ManifestError: If ``raw`` is not a non-empty string.
+    """
+    if not isinstance(raw, str):
+        raise ManifestError(
+            f"Task '{task_id}': each entry in 'writes' must be a string, "
+            f"got {type(raw)!r}."
+        )
+    if raw == "":
+        raise ManifestError(
+            f"Task '{task_id}': 'writes' entry must be a non-empty string."
+        )
+    p = Path(raw)
+    if not p.is_absolute():
+        p = cwd / p
+    return p.resolve().as_posix()
+
+
 def _extract_frontmatter(text: str) -> str:
     """Extract the YAML frontmatter block from a manifest text.
 
@@ -194,6 +228,17 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
     else:
         cwd = default_cwd
 
+    # Parse writes after cwd is resolved (relative path resolution depends on cwd).
+    raw_writes = raw.get("writes", []) or []
+    if not isinstance(raw_writes, list):
+        raise ManifestError(
+            f"Task '{task_id}': 'writes' must be a list of strings, "
+            f"got {type(raw_writes)!r}."
+        )
+    writes: tuple[str, ...] = tuple(
+        _normalize_write_path(item, task_id, cwd) for item in raw_writes
+    )
+
     return Task(
         id=task_id,
         agent=agent,
@@ -202,6 +247,7 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
         timeout_sec=timeout_sec,
         cwd=cwd,
         env=env,
+        writes=writes,
     )
 
 
