@@ -252,7 +252,7 @@ tasks:
 
 
 def test_未知キーが無視されて正常パースされる(manifest_file):
-    """Unknown keys like 'writes' in a task are ignored; parse succeeds."""
+    """Known key 'writes' is parsed; other unknown keys are ignored; parse succeeds."""
     content = """\
 ---
 clade_plan_version: "0.1"
@@ -270,6 +270,10 @@ tasks:
     path = manifest_file(content)
     result = load_manifest(path)
     assert len(result.tasks) == 1
+    task = result.tasks[0]
+    # 'writes' is now a known field and is parsed into an absolute POSIX path
+    assert len(task.writes) == 1
+    assert task.writes[0].endswith("/some/output.md")
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ from ._exceptions import CladeParallelError
 # Public constants
 # ---------------------------------------------------------------------------
 
-SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1"})
+SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1", "0.2"})
 
 # Environment variable keys that are blocked for security reasons.
 # These keys can be used to inject malicious code via dynamic linker or
