@@ -15,7 +15,6 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from ._exceptions import CladeParallelError
 from .manifest import Manifest, Task, load_manifest
@@ -196,7 +195,9 @@ def _worktree_cleanup(git_root: Path, worktree_path: Path) -> None:
         pass
 
 
-def _execute_task(task: Task, claude_exe: str, *, git_root: Path | None = None) -> TaskResult:
+def _execute_task(
+    task: Task, claude_exe: str, *, git_root: Path | None = None
+) -> TaskResult:
     """Execute a single agent task as a subprocess and return its result.
 
     Uses subprocess.Popen so that the process can be killed on timeout
@@ -245,7 +246,7 @@ def _execute_task(task: Task, claude_exe: str, *, git_root: Path | None = None) 
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",  # Avoid cp932 decoding errors on Japanese Windows
-                errors="replace",  # Replace invalid bytes with U+FFFD instead of raising
+                errors="replace",  # Replace invalid bytes with U+FFFD
             )
         except FileNotFoundError as exc:
             raise RunnerError(f"claude executable not found: {claude_exe!r}") from exc
@@ -414,7 +415,6 @@ class _DependencyScheduler:
                         if runner_error is None:
                             runner_error = exc
                         # Treat the task as failed so downstream tasks skip.
-                        task_result = self._make_skipped(task)
                         task_result = TaskResult(
                             task_id=task.id,
                             agent=task.agent,
