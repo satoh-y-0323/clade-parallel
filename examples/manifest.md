@@ -5,6 +5,7 @@ tasks:
   - id: code-review
     agent: code-reviewer
     read_only: true
+    cwd: ..
     prompt: |
       Use the Agent tool with subagent_type "code-reviewer" to review the current repository.
       Pass the following prompt to the subagent:
@@ -29,10 +30,11 @@ tasks:
       """
 
       Do not ask any clarifying questions. Do not wait for approval. Invoke the subagent immediately with the above prompt and exit after the subagent completes.
-    timeout_sec: 600
+    timeout_sec: 1200
   - id: security-review
     agent: security-reviewer
     read_only: true
+    cwd: ..
     prompt: |
       Use the Agent tool with subagent_type "security-reviewer" to review the current repository.
       Pass the following prompt to the subagent:
@@ -60,7 +62,7 @@ tasks:
       """
 
       Do not ask any clarifying questions. Do not wait for approval. Invoke the subagent immediately with the above prompt and exit after the subagent completes.
-    timeout_sec: 600
+    timeout_sec: 1200
 ---
 
 # Parallel Reviewers Demo
@@ -97,7 +99,7 @@ clade-parallel run examples/manifest.md --quiet
 
 ## 注意点
 
-- `timeout_sec: 600`（10 分）に設定しています。Claude Code のサブエージェント実行には
+- `timeout_sec: 1200`（20 分）に設定しています。Claude Code のサブエージェント実行には
   数分かかる場合があります。環境に合わせて調整してください。
 - 実行には `claude` CLI が `PATH` に含まれている必要があります。
   カスタムパスの場合は `--claude-exe` オプションで指定してください。

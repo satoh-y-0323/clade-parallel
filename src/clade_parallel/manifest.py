@@ -182,7 +182,11 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
     env: dict[str, str] = dict(raw_env)
 
     cwd_raw = raw.get("cwd")
-    cwd: Path = Path(cwd_raw).resolve() if cwd_raw is not None else default_cwd
+    if cwd_raw is not None:
+        cwd_path = Path(cwd_raw)
+        cwd = cwd_path if cwd_path.is_absolute() else (default_cwd / cwd_path).resolve()
+    else:
+        cwd = default_cwd
 
     return Task(
         id=task_id,
