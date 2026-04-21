@@ -6,6 +6,7 @@ A manifest file is a Markdown file with a YAML frontmatter block delimited by
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,12 @@ from ._exceptions import CladeParallelError
 # ---------------------------------------------------------------------------
 
 SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1", "0.2", "0.3"})
+
+# Regular expression that defines the set of characters allowed in a task ID.
+# Only alphanumeric characters, hyphens, and underscores are permitted.
+# This prevents path traversal attacks when task.id is used to construct
+# worktree directory paths (e.g., ".clade-worktrees/<task.id>-<uuid8>").
+_TASK_ID_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # Environment variable keys that are blocked for security reasons.
 # These keys can be used to inject malicious code via dynamic linker or
@@ -199,6 +206,20 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
     task_id = raw["id"]
     agent = raw["agent"]
     read_only = raw["read_only"]
+
+    # Validate task_id: must be a non-empty string matching [A-Za-z0-9_-]+.
+    # This prevents path traversal attacks when task.id is used to construct
+    # worktree directory paths (e.g., ".clade-worktrees/<task.id>-<uuid8>").
+    if not isinstance(task_id, str):
+        raise ManifestError(
+            f"Task ID must be a string, got {type(task_id)!r}."
+        )
+    if not task_id or not _TASK_ID_PATTERN.match(task_id):
+        raise ManifestError(
+            f"Task ID {task_id!r} contains invalid characters. "
+            "Only alphanumeric characters, hyphens, and underscores are allowed "
+            "(pattern: [A-Za-z0-9_-]+)."
+        )
 
     # read_only must be a Python bool (not a string like "yes").
     if not isinstance(read_only, bool):

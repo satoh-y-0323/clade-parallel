@@ -222,12 +222,23 @@ tasks:
 
 
 # ---------------------------------------------------------------------------
-# Test 5: read_only: false raises ManifestError (v0.1 is read-only only)
+# Test 5: read_only: false is accepted (T3 — replaces v0.1-era block)
+#
+# NOTE: The original test `test_read_only_falseのタスクがあるとManifestErrorが送出される`
+# asserted that read_only: false raises ManifestError (v0.1 restriction).
+# Per plan-report T3, that restriction is REMOVED in v0.3.
+# This test now verifies the OPPOSITE: read_only: false MUST be accepted.
+# This is a RED test until the `if not read_only: raise ManifestError(...)` block
+# is removed from manifest.py._parse_task().
 # ---------------------------------------------------------------------------
 
 
-def test_read_only_falseのタスクがあるとManifestErrorが送出される(manifest_file):
-    """A task with read_only: false raises ManifestError in v0.1."""
+def test_read_only_falseのタスクが受理される(manifest_file):
+    """A task with read_only: false must be accepted (v0.3 removes the v0.1 block).
+
+    RED phase: current manifest.py still raises ManifestError for read_only: false,
+    so this test FAILS until the restriction is removed in _parse_task().
+    """
     content = """\
 ---
 clade_plan_version: "0.1"
@@ -242,8 +253,12 @@ tasks:
 ---
 """
     path = manifest_file(content)
-    with pytest.raises(ManifestError):
-        load_manifest(path)
+    # Must NOT raise — read_only: false is valid from v0.3 onwards.
+    result = load_manifest(path)
+    task_ids = {t.id for t in result.tasks}
+    assert "writer" in task_ids
+    writer_task = next(t for t in result.tasks if t.id == "writer")
+    assert writer_task.read_only is False
 
 
 # ---------------------------------------------------------------------------
@@ -952,3 +967,563 @@ def test_別々のcwdでも正規化後が同一なら衝突扱い(tmp_path):
     msg = str(exc_info.value)
     assert "task-1" in msg
     assert "task-2" in msg
+
+
+# ---------------------------------------------------------------------------
+# M1 T1/T2: depends_on field tests (Red phase — Phase A)
+#
+# These tests verify the `depends_on` field introduced in v0.3 Phase A.
+# All tests in this section are expected to FAIL (Red) until developer
+# implements the depends_on parsing and validation in manifest.py (T2).
+# ---------------------------------------------------------------------------
+
+
+# --- T1-1: depends_on 省略時はデフォルト空タプル ---
+
+def test_depends_on省略時に空タプルになる(manifest_file):
+    """depends_on omitted — task.depends_on defaults to empty tuple ().
+
+    RED: Task dataclass does not yet have a depends_on field, so this test
+    fails with AttributeError until T2 adds the field.
+    """
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    task = result.tasks[0]
+    assert task.depends_on == ()
+
+
+# --- T1-2: depends_on 空リスト明示 ---
+
+def test_depends_on空リスト明示時に空タプルになる(manifest_file):
+    """depends_on: [] — task.depends_on is an empty tuple.
+
+    RED: Same as above — Task has no depends_on field yet.
+    """
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    depends_on: []
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.tasks[0].depends_on == ()
+
+
+# --- T1-3: depends_on が正常にパースされる ---
+
+def test_depends_onが正常にパースされる(tmp_path):
+    """depends_on: ["a", "b"] — task.depends_on is ("a", "b") preserving order.
+
+    RED: Task has no depends_on field; _parse_task does not parse it.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "a",
+                "agent": "code-reviewer",
+                "read_only": True,
+            },
+            {
+                "id": "b",
+                "agent": "security-reviewer",
+                "read_only": True,
+            },
+            {
+                "id": "c",
+                "agent": "developer",
+                "read_only": True,
+                "depends_on": ["a", "b"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    result = load_manifest(manifest_path)
+    task_c = next(t for t in result.tasks if t.id == "c")
+    assert task_c.depends_on == ("a", "b")
+
+
+# --- T1-4: depends_on の重複要素が除去され順序保存 ---
+
+def test_depends_on重複要素が除去され順序保存される(tmp_path):
+    """depends_on: ["a", "b", "a"] — duplicates removed, order preserved -> ("a", "b").
+
+    RED: _parse_task does not yet deduplicate depends_on entries.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {"id": "a", "agent": "code-reviewer", "read_only": True},
+            {"id": "b", "agent": "security-reviewer", "read_only": True},
+            {
+                "id": "c",
+                "agent": "developer",
+                "read_only": True,
+                "depends_on": ["a", "b", "a"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    result = load_manifest(manifest_path)
+    task_c = next(t for t in result.tasks if t.id == "c")
+    # "a" appears twice; result should be deduplicated, order-preserving
+    assert task_c.depends_on == ("a", "b")
+
+
+# --- T1-5: depends_on が list 以外の型のとき ManifestError ---
+
+@pytest.mark.parametrize(
+    "bad_depends_on,label",
+    [
+        ("single-string", "str"),
+        (42, "int"),
+        ({"key": "val"}, "dict"),
+    ],
+    ids=["str", "int", "dict"],
+)
+def test_depends_onがリスト以外のときManifestErrorが送出される(
+    bad_depends_on, label, manifest_file
+):
+    """depends_on that is not a list raises ManifestError.
+
+    RED: _parse_task does not yet validate depends_on type.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "review",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "depends_on": bad_depends_on,
+            }
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+# --- T1-6: depends_on の要素が str でないとき ManifestError ---
+
+def test_depends_on要素がstr以外のときManifestErrorが送出される(manifest_file):
+    """depends_on: [123] — non-string element raises ManifestError.
+
+    RED: _parse_task does not yet validate element types.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "review",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "depends_on": [123],
+            }
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+# --- T1-7: depends_on の要素が空文字列のとき ManifestError ---
+
+def test_depends_on要素が空文字列のときManifestErrorが送出される(manifest_file):
+    """depends_on: [""] — empty string element raises ManifestError.
+
+    RED: _parse_task does not yet reject empty string elements.
+    """
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    depends_on:
+      - ""
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+# --- T1-8: 未定義 ID を depends_on に指定したら ManifestError ---
+
+def test_depends_onに未定義IDを指定するとManifestErrorが送出される(tmp_path):
+    """depends_on referencing an undefined task ID raises ManifestError.
+
+    RED: load_manifest does not yet call _check_depends_on_refs().
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "review",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "depends_on": ["nonexistent"],
+            }
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(manifest_path)
+
+    # Error message should name the undefined ID
+    assert "nonexistent" in str(exc_info.value)
+
+
+# --- T1-9: 複数の未定義 ID が決定論的メッセージで報告される ---
+
+def test_depends_on複数未定義IDが決定論的メッセージで報告される(tmp_path):
+    """Multiple undefined depends_on IDs are all listed in ManifestError message.
+
+    The message must be deterministic (sorted).
+    RED: _check_depends_on_refs not yet implemented.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "review",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "depends_on": ["ghost-b", "ghost-a"],
+            }
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(manifest_path)
+
+    msg = str(exc_info.value)
+    assert "ghost-a" in msg
+    assert "ghost-b" in msg
+
+
+# --- T1-10: 自己参照（自タスクが自分自身に depends_on）で ManifestError ---
+
+def test_depends_on自己参照でManifestErrorが送出される(tmp_path):
+    """depends_on referencing own id (self-loop) raises ManifestError.
+
+    RED: _check_cyclic_dependencies not yet implemented.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "self",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "depends_on": ["self"],
+            }
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError):
+        load_manifest(manifest_path)
+
+
+# --- T1-11: 直接循環 A→B→A が ManifestError、メッセージに経路が含まれる ---
+
+def test_depends_on直接循環でManifestErrorが送出される(tmp_path):
+    """Direct cycle A->B->A raises ManifestError with the cycle path in the message.
+
+    RED: _check_cyclic_dependencies not yet implemented.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "A",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "depends_on": ["B"],
+            },
+            {
+                "id": "B",
+                "agent": "security-reviewer",
+                "read_only": True,
+                "depends_on": ["A"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(manifest_path)
+
+    msg = str(exc_info.value)
+    # Both node IDs must appear in the error message
+    assert "A" in msg
+    assert "B" in msg
+
+
+# --- T1-12: 間接循環 A→B→C→A が ManifestError、経路が正しく復元される ---
+
+def test_depends_on間接循環でManifestErrorが送出される(tmp_path):
+    """Indirect cycle A->B->C->A raises ManifestError with full cycle path.
+
+    RED: _check_cyclic_dependencies not yet implemented.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "A",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "depends_on": ["B"],
+            },
+            {
+                "id": "B",
+                "agent": "security-reviewer",
+                "read_only": True,
+                "depends_on": ["C"],
+            },
+            {
+                "id": "C",
+                "agent": "developer",
+                "read_only": True,
+                "depends_on": ["A"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(manifest_path)
+
+    msg = str(exc_info.value)
+    # All three cycle participants must be mentioned
+    assert "A" in msg
+    assert "B" in msg
+    assert "C" in msg
+
+
+# --- T1-13: depends_on + writes + 既存チェックが全て正常な場合 load できる ---
+
+def test_depends_onとwritesが全て正常なマニフェストがロードできる(tmp_path):
+    """A manifest with valid depends_on, writes, and all other checks passes.
+
+    RED: Task has no depends_on field; load will fail with AttributeError or
+    ManifestError until T2 is implemented.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "build",
+                "agent": "developer",
+                "read_only": False,
+                "writes": ["build/out.txt"],
+            },
+            {
+                "id": "review",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "depends_on": ["build"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    result = load_manifest(manifest_path)
+    assert len(result.tasks) == 2
+
+    build_task = next(t for t in result.tasks if t.id == "build")
+    review_task = next(t for t in result.tasks if t.id == "review")
+
+    assert build_task.read_only is False
+    assert len(build_task.writes) == 1
+    assert review_task.depends_on == ("build",)
+
+
+# ---------------------------------------------------------------------------
+# Security: task.id validation (path traversal prevention)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "valid_id",
+    [
+        "review",
+        "security-reviewer",
+        "task_1",
+        "T1",
+        "MyTask",
+        "a",
+        "A1_b-C",
+        "task-001",
+    ],
+    ids=[
+        "simple_lowercase",
+        "hyphen",
+        "underscore_digit",
+        "uppercase",
+        "PascalCase",
+        "single_char",
+        "mixed_chars",
+        "leading_digits",
+    ],
+)
+def test_有効なtask_idが受理される(valid_id, manifest_file):
+    """task.id containing only [A-Za-z0-9_-] characters is accepted."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": valid_id,
+                "agent": "code-reviewer",
+                "read_only": True,
+            }
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.tasks[0].id == valid_id
+
+
+@pytest.mark.parametrize(
+    "invalid_id,description",
+    [
+        ("../../etc/passwd", "path_traversal_dotdot"),
+        ("../outside", "path_traversal_relative"),
+        ("task/subtask", "slash"),
+        ("task name", "space"),
+        ("task.id", "dot"),
+        ("task@host", "at_sign"),
+        ("", "empty_string"),
+        ("task\x00null", "null_byte"),
+        ("/absolute/path", "absolute_path"),
+    ],
+    ids=[
+        "path_traversal_dotdot",
+        "path_traversal_relative",
+        "slash",
+        "space",
+        "dot",
+        "at_sign",
+        "empty_string",
+        "null_byte",
+        "absolute_path",
+    ],
+)
+def test_無効なtask_idでManifestErrorが送出される(invalid_id, description, manifest_file):
+    """task.id containing characters outside [A-Za-z0-9_-] raises ManifestError.
+
+    This validates the path traversal prevention: IDs like '../../etc/passwd'
+    or 'task/subtask' must be rejected before they can influence worktree paths.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": invalid_id,
+                "agent": "code-reviewer",
+                "read_only": True,
+            }
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(path)
+    # Error message should indicate what characters are invalid
+    msg = str(exc_info.value)
+    assert "alphanumeric" in msg or "invalid" in msg or "characters" in msg
+
+
+def test_task_idバリデーションエラーメッセージに問題文字が示される(manifest_file):
+    """ManifestError from invalid task.id includes a message indicating the constraint."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: "bad/id"
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(path)
+    msg = str(exc_info.value)
+    # Must contain info about what characters are allowed or why it's invalid
+    assert any(
+        keyword in msg
+        for keyword in ["alphanumeric", "invalid", "characters", "hyphens", "underscores"]
+    )
