@@ -164,7 +164,7 @@ class TestParallelExecution:
     ) -> None:
         """Wall-clock time must be less than sum of individual sleep durations."""
         manifest_path = _write_manifest(tmp_path)
-        sleep_per_task = 0.1
+        sleep_per_task = 0.3
         fake_claude_runner(
             [
                 {"returncode": 0, "sleep_sec": sleep_per_task},
