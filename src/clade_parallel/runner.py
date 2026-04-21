@@ -196,6 +196,244 @@ def _worktree_setup(git_root: Path, task: Task) -> tuple[Path, str]:
     return worktree_path, branch_name
 
 
+def _resolve_merge_base_branch(cwd: Path, timeout: int = _GIT_COMMAND_TIMEOUT_SEC) -> str:
+    """Return the current branch name using ``git symbolic-ref``.
+
+    Args:
+        cwd: Directory in which to run the git command.
+        timeout: Timeout in seconds for the git command.
+
+    Returns:
+        The current branch name (e.g. ``'main'``).
+
+    Raises:
+        RunnerError: If HEAD is detached (``git symbolic-ref`` returns non-zero).
+    """
+    result = subprocess.run(
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise RunnerError(
+            "Cannot resolve merge base branch: HEAD is in detached state. "
+            "Please check out a branch before running clade-parallel."
+        )
+    return result.stdout.strip()
+
+
+def _abort_merge(cwd: Path, timeout: int = _GIT_COMMAND_TIMEOUT_SEC) -> None:
+    """Abort an in-progress git merge on a best-effort basis.
+
+    Any exception is silently swallowed to avoid masking the original error.
+
+    Args:
+        cwd: Directory in which to run the git command.
+        timeout: Timeout in seconds for the git command.
+    """
+    try:
+        subprocess.run(
+            ["git", "merge", "--abort"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _delete_branch(
+    cwd: Path, branch_name: str, timeout: int = _GIT_COMMAND_TIMEOUT_SEC
+) -> None:
+    """Delete a local git branch on a best-effort basis.
+
+    Uses ``git branch -d`` (safe delete — refuses if unmerged).
+    Any exception is silently swallowed.
+
+    Args:
+        cwd: Directory in which to run the git command.
+        branch_name: The branch to delete.
+        timeout: Timeout in seconds for the git command.
+    """
+    try:
+        subprocess.run(
+            ["git", "branch", "-d", branch_name],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _merge_single_branch(
+    cwd: Path,
+    base_branch: str,
+    task_id: str,
+    branch_name: str,
+    timeout: int = _GIT_COMMAND_TIMEOUT_SEC,
+) -> MergeResult:
+    """Merge a single worktree branch into the current branch.
+
+    Runs ``git merge --no-ff --no-edit <branch_name>`` in *cwd*.
+
+    On success:
+        Calls ``_delete_branch`` to remove the merged branch, then returns
+        a ``MergeResult`` with ``status='merged'``.
+
+    On conflict (non-zero returncode or ``CalledProcessError``):
+        Calls ``_abort_merge`` to restore a clean state, then returns
+        a ``MergeResult`` with ``status='conflict'``.
+
+    On timeout or OS error:
+        Calls ``_abort_merge`` and returns a ``MergeResult`` with
+        ``status='error'``.
+
+    Args:
+        cwd: The git repository root directory (merge is run here).
+        base_branch: Name of the branch being merged into (informational).
+        task_id: The task identifier for the MergeResult.
+        branch_name: The branch to merge.
+        timeout: Timeout in seconds for the git merge command.
+
+    Returns:
+        A ``MergeResult`` describing the outcome.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "merge", "--no-ff", "--no-edit", branch_name],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        if result.returncode == 0:
+            _delete_branch(cwd, branch_name)
+            return MergeResult(
+                task_id=task_id,
+                branch_name=branch_name,
+                status="merged",
+                stderr=result.stderr or "",
+            )
+        else:
+            # Non-zero returncode → conflict
+            _abort_merge(cwd)
+            return MergeResult(
+                task_id=task_id,
+                branch_name=branch_name,
+                status="conflict",
+                stderr=result.stderr or "",
+            )
+    except subprocess.CalledProcessError as exc:
+        _abort_merge(cwd)
+        stderr = exc.stderr if isinstance(exc.stderr, str) else str(exc)
+        return MergeResult(
+            task_id=task_id,
+            branch_name=branch_name,
+            status="conflict",
+            stderr=stderr,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        _abort_merge(cwd)
+        return MergeResult(
+            task_id=task_id,
+            branch_name=branch_name,
+            status="error",
+            stderr=str(exc),
+        )
+
+
+def _build_conflict_message(
+    conflict: MergeResult,
+    pending: list[str],
+) -> str:
+    """Build a human-readable error message for a merge conflict.
+
+    Args:
+        conflict: The ``MergeResult`` with ``status='conflict'``.
+        pending: List of branch names that were not yet attempted.
+
+    Returns:
+        A formatted error string containing conflict details and resolution
+        instructions.
+    """
+    lines = [
+        f"Merge conflict detected in task '{conflict.task_id}' "
+        f"on branch '{conflict.branch_name}'.",
+    ]
+    if conflict.stderr:
+        lines.append(f"\nGit output:\n{conflict.stderr}")
+    if pending:
+        lines.append("\nThe following branches were NOT merged (pending):")
+        for b in pending:
+            lines.append(f"  - {b}")
+    lines.append(
+        "\nTo resolve manually:\n"
+        f"  1. Inspect the conflict: git merge {conflict.branch_name}\n"
+        "  2. Resolve the conflicting files.\n"
+        "  3. Stage the resolved files: git add <files>\n"
+        "  4. Complete the merge: git commit\n"
+        "  5. Repeat for each pending branch above."
+    )
+    return "\n".join(lines)
+
+
+def _merge_write_branches(
+    cwd: Path,
+    base_branch: str,
+    results: tuple[TaskResult, ...],
+    timeout: int = _GIT_COMMAND_TIMEOUT_SEC,
+) -> tuple[MergeResult, ...]:
+    """Merge all successful write-task branches into *base_branch* in manifest order.
+
+    Tasks are skipped if any of the following is true:
+    - ``task.ok`` is False (failed, skipped, or timed out)
+    - ``branch_name`` is None (read-only task)
+
+    On the first conflict, the function stops immediately (fail-fast) and
+    raises ``RunnerError`` with a descriptive message that includes the
+    names of branches that were not yet attempted.
+
+    Args:
+        cwd: The git repository root.
+        base_branch: The base branch name (informational; merge targets current HEAD).
+        results: All ``TaskResult`` instances in manifest declaration order.
+        timeout: Timeout in seconds for each git merge command.
+
+    Returns:
+        A tuple of ``MergeResult`` for each branch that was attempted.
+
+    Raises:
+        RunnerError: If a merge conflict is encountered.
+    """
+    # Collect eligible branches in manifest declaration order.
+    eligible: list[TaskResult] = [
+        tr for tr in results if tr.ok and tr.branch_name is not None
+    ]
+
+    merge_results: list[MergeResult] = []
+    for i, tr in enumerate(eligible):
+        merge_result = _merge_single_branch(
+            cwd, base_branch, tr.task_id, tr.branch_name  # type: ignore[arg-type]
+        )
+        merge_results.append(merge_result)
+        if merge_result.status == "conflict":
+            # Fail-fast: collect remaining branch names for the error message.
+            pending_branches = [
+                t.branch_name for t in eligible[i + 1:] if t.branch_name is not None
+            ]
+            raise RunnerError(_build_conflict_message(merge_result, pending_branches))
+
+    return tuple(merge_results)
+
+
 def _worktree_cleanup(git_root: Path, worktree_path: Path) -> None:
     """Remove a git worktree on a best-effort basis.
 
@@ -587,4 +825,10 @@ def run_manifest(
         scheduler = _DependencyScheduler(tasks, executor, execute_fn)
         task_results: tuple[TaskResult, ...] = scheduler.run()
 
-    return RunResult(results=task_results)
+    # Post-processing: merge write-task branches back to the base branch.
+    merge_results: tuple[MergeResult, ...] = ()
+    if has_write_tasks:
+        base_branch = _resolve_merge_base_branch(default_cwd)
+        merge_results = _merge_write_branches(default_cwd, base_branch, task_results)
+
+    return RunResult(results=task_results, merge_results=merge_results)
