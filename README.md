@@ -1,9 +1,9 @@
 # clade-parallel
 
-> **Experimental / Alpha — v0.1**
+> **Experimental / Alpha — v0.3**
 > API and CLI are subject to change until v1.0.
 
-Parallel execution wrapper for read-only Clade agents (Python).
+Parallel execution wrapper for Clade agents (Python).
 
 ## What this is
 
@@ -90,10 +90,72 @@ Any Markdown content below the frontmatter is ignored by clade-parallel.
 |-------|----------|-------------|
 | `id` | Yes | Unique task identifier (used in output) |
 | `agent` | Yes | Agent type string passed to `claude -p` |
-| `read_only` | Yes | Must be `true` in v0.1; `false` is rejected |
+| `read_only` | Yes | `true` (read-only) or `false` (write task; runs in an isolated worktree) |
 | `prompt` | No | Prompt string sent to the agent |
 | `timeout_sec` | No | Per-task timeout in seconds (default: no limit) |
 | `env` | No | Extra environment variables for the subprocess |
+| `writes` | No | List of file paths the task will write (used for static conflict detection) |
+| `depends_on` | No | List of task IDs that must complete before this task starts |
+
+### `depends_on` — task dependencies
+
+Tasks that declare `depends_on` will not start until all listed tasks have completed successfully.
+If any dependency fails, the dependent task is **skipped** (not executed).
+Skipped tasks propagate transitively: if B depends on A and A fails, B is skipped; if C depends on B, C is also skipped.
+Tasks with no dependencies (or with all dependencies satisfied) run in parallel.
+
+```markdown
+---
+clade_plan_version: "0.1"
+name: "sequential-example"
+tasks:
+  - id: fetch
+    agent: general-purpose
+    read_only: true
+    prompt: "Fetch the data"
+  - id: process
+    agent: general-purpose
+    read_only: true
+    prompt: "Process the data"
+    depends_on:
+      - fetch
+  - id: report
+    agent: general-purpose
+    read_only: true
+    prompt: "Summarize results"
+    depends_on:
+      - process
+---
+```
+
+Circular dependencies and references to undefined task IDs are detected at parse time and raise a `ManifestError`.
+
+### `read_only: false` — write tasks with worktree isolation
+
+Tasks with `read_only: false` are executed inside an isolated `git worktree`
+(`<git_root>/.clade-worktrees/<task_id>-<uuid8>/`).
+Each write task gets its own directory, so parallel write tasks cannot overwrite each other's files.
+
+**Requirement**: the manifest must be run from within a git repository when any task has `read_only: false`.
+Running outside a git repository raises a `RunnerError`.
+Manifests with all tasks set to `read_only: true` continue to work outside git repositories (backward compatible).
+
+The worktree directory is created before the task starts and removed after the task finishes (success or failure).
+Cleanup failures are silently ignored to avoid masking the actual task result.
+
+```markdown
+---
+clade_plan_version: "0.1"
+name: "write-example"
+tasks:
+  - id: writer
+    agent: general-purpose
+    read_only: false
+    prompt: "Write a summary to output.md"
+    writes:
+      - output.md
+---
+```
 
 ## CLI options
 
@@ -115,22 +177,17 @@ clade-parallel --help
 | 2 | ManifestError (invalid manifest format) |
 | 3 | RunnerError (e.g., `claude` binary not found) |
 
-## Known limitations (v0.1)
-
-- **Read-only tasks only**: v0.1 supports read-only tasks only. Manifests containing
-  `read_only: false` are rejected at parse time.
+## Known limitations (v0.3)
 
 - **`/agent-*` (Clade slash commands) in `-p` mode**: Clade's `/agent-*` slash commands
   are designed for interactive use with Q&A and approval dialogs. In `claude -p`
   (non-interactive) mode they may not reach the report-generation step as intended.
   Workaround: use direct `Agent` tool invocations with `subagent_type` in the prompt
-  (see `examples/manifest.md`). v0.2 will investigate better support for this pattern.
+  (see `examples/manifest.md`).
 
-- **No worktree isolation yet**: All parallel tasks run in the same working directory.
-  Tasks that write files are out of scope for v0.1. Worktree isolation is planned for v0.3.
-
-- **No `writes:` / `depends_on:` declaration checks**: v0.1 does not perform static
-  conflict analysis. These declarations will be added in v0.2.
+- **Write tasks require a git repository**: Tasks with `read_only: false` must be run
+  from within a git repository (worktree isolation relies on `git worktree add`).
+  Manifests with only `read_only: true` tasks still work outside git repositories.
 
 - **Sensitive file warnings in `claude -p` mode**: When a task's working
   directory contains `.env` files, SSH private keys, or other sensitive
@@ -138,9 +195,9 @@ clade-parallel --help
   terminate before producing output. Workaround: run tasks in a working
   directory that does not contain such files (e.g., point `cwd` at a
   clean subdirectory), or add the files to `.gitignore` / move them
-  outside the repository root before running clade-parallel. Worktree
-  isolation (v0.3) will address this by giving each task its own clean
-  directory.
+  outside the repository root before running clade-parallel. Write tasks
+  (`read_only: false`) run in an isolated worktree and are less affected
+  by this issue.
 
 - **`env` block-list**: The following keys are silently rejected from `task.env` for
   security reasons: `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`,
@@ -165,12 +222,11 @@ mypy src/ tests/
 
 ## Roadmap
 
-| Version | Focus |
-|---------|-------|
-| v0.2 | `writes:` declarations + static conflict checks; better `-p` mode subagent report generation |
-| v0.3 | Worktree isolation + sequential merge |
-| v0.4 | `depends_on:` DAG scheduler |
-| v0.5+ | Retry / partial re-run / telemetry |
+| Version | Focus | Status |
+|---------|-------|--------|
+| v0.2 | `writes:` declarations + static conflict checks | Released |
+| v0.3 | `depends_on:` DAG scheduler + worktree isolation for write tasks | Released |
+| v0.4+ | Retry / partial re-run / telemetry | Planned |
 
 ## License
 
