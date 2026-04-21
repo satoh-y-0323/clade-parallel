@@ -660,7 +660,7 @@ def test_複数タスクがRunnerErrorを起こしても最初の1件のみ送�
     call_counts: list[int] = [0]
     raised_errors: list[RunnerError] = []
 
-    def fake_execute_task(task: Any, claude_exe: str) -> TaskResult:
+    def fake_execute_task(task: Any, claude_exe: str, **kwargs: Any) -> TaskResult:
         """Raise a distinct RunnerError for each call."""
         idx = call_counts[0]
         call_counts[0] += 1
@@ -732,3 +732,633 @@ def test_popen呼び出し時にencoding_utf8とerrors_replaceが指定される
         f"Expected errors='replace' but got {kwargs.get('errors')!r}. "
         "Without this, invalid bytes raise UnicodeDecodeError instead of being replaced."
     )
+
+
+# ---------------------------------------------------------------------------
+# T4: Phase B — TaskResult.skipped / worktree helpers / _execute_task (Red phase)
+#
+# These tests are designed to FAIL until T5 implementation is complete.
+# Expected failure modes:
+#   - TaskResult.skipped: TypeError (unknown field in frozen dataclass)
+#   - _require_git_root / _worktree_setup / _worktree_cleanup: AttributeError
+#   - _execute_task(git_root=...): TypeError (unexpected keyword argument)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# T4-1: TaskResult.skipped backward compatibility — skipped defaults to False
+# ---------------------------------------------------------------------------
+
+
+def test_TaskResult_skippedデフォルトFalseのときokが従来どおり評価される(
+    fake_claude_runner, tmp_path
+):
+    """TaskResult.skipped defaults to False; ok behaves as before (backward compatible).
+
+    Red: TaskResult currently has no 'skipped' field, so accessing tr.skipped
+    raises AttributeError, causing this test to fail.
+    """
+    outcomes = [{"returncode": 0}]
+    fake_claude_runner(outcomes)
+
+    manifest = _make_manifest(tmp_path, SINGLE_TASK)
+    result = run_manifest(manifest)
+
+    tr = result.results[0]
+    # skipped must default to False (field not yet implemented → AttributeError → Red)
+    assert tr.skipped is False
+    # ok should be True when returncode==0 and not skipped
+    assert tr.ok is True
+
+
+def test_TaskResult_skippedデフォルトFalseのときreturncode1でokがFalse(
+    fake_claude_runner, tmp_path
+):
+    """When skipped=False (default) and returncode!=0, ok must be False.
+
+    Red: accessing tr.skipped raises AttributeError until T5.
+    """
+    outcomes = [{"returncode": 1}]
+    fake_claude_runner(outcomes)
+
+    manifest = _make_manifest(tmp_path, SINGLE_TASK)
+    result = run_manifest(manifest)
+
+    tr = result.results[0]
+    assert tr.skipped is False
+    assert tr.ok is False
+
+
+# ---------------------------------------------------------------------------
+# T4-2: TaskResult.skipped=True forces ok==False even when returncode==0
+# ---------------------------------------------------------------------------
+
+
+def test_TaskResult_skippedTrueのときreturncode0でもokがFalse():
+    """skipped=True must make ok==False regardless of returncode.
+
+    Red: TaskResult has no 'skipped' field → TypeError on construction.
+    """
+    import clade_parallel.runner as runner_module
+
+    # Attempt to construct TaskResult with skipped=True.
+    # Currently raises TypeError because 'skipped' is not a field.
+    tr = runner_module.TaskResult(
+        task_id="x",
+        agent="code-reviewer",
+        returncode=0,
+        stdout="",
+        stderr="",
+        timed_out=False,
+        duration_sec=0.0,
+        skipped=True,
+    )
+    assert tr.skipped is True
+    assert tr.ok is False
+
+
+# ---------------------------------------------------------------------------
+# T4-3: _require_git_root — returns Path inside a git repository
+# ---------------------------------------------------------------------------
+
+
+def test_require_git_root_gitリポジトリ内でPathを返す(tmp_path):
+    """_require_git_root(cwd) returns a Path when cwd is inside a git repo.
+
+    Red: _require_git_root does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    # Use the project's own git root as the reference repository.
+    # The test suite is always run inside the clade-parallel repo.
+    repo_cwd = Path(__file__).parent.parent  # project root (has .git)
+
+    require_git_root = getattr(runner_module, "_require_git_root")
+    git_root = require_git_root(repo_cwd)
+
+    assert isinstance(git_root, Path)
+    assert (git_root / ".git").exists()
+
+
+# ---------------------------------------------------------------------------
+# T4-4: _require_git_root — raises RunnerError outside a git repository
+# ---------------------------------------------------------------------------
+
+
+def test_require_git_root_gitリポジトリ外でRunnerErrorが送出される(tmp_path):
+    """_require_git_root(cwd) raises RunnerError when cwd is not inside a git repo.
+
+    Red: _require_git_root does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    # tmp_path is a freshly created directory with no .git — guaranteed non-repo.
+    require_git_root = getattr(runner_module, "_require_git_root")
+
+    with pytest.raises(RunnerError):
+        require_git_root(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# T4-5: _worktree_setup — creates .clade-worktrees/<id>-<uuid8>/ and returns Path
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    """Create a minimal real git repository in tmp_path and return its root."""
+    import subprocess as sp
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sp.run(["git", "init", str(repo)], check=True, capture_output=True)
+    sp.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
+    sp.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
+    # Create an initial commit so the repo has a HEAD (required for worktree add)
+    init_file = repo / "README.md"
+    init_file.write_text("init", encoding="utf-8")
+    sp.run(["git", "add", "."], cwd=str(repo), check=True, capture_output=True)
+    sp.run(
+        ["git", "commit", "-m", "init"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
+    return repo
+
+
+def test_worktree_setup_ディレクトリを作成しPathを返す(git_repo: Path):
+    """_worktree_setup creates .clade-worktrees/<id>-<uuid8>/ and returns an existing Path.
+
+    Red: _worktree_setup does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+    from clade_parallel.manifest import load_manifest
+
+    # Build a minimal Task using a manifest loaded from the git_repo.
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: worktree-test
+tasks:
+  - id: write-task
+    agent: developer
+    read_only: false
+---
+"""
+    manifest_file = git_repo / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    worktree_setup = getattr(runner_module, "_worktree_setup")
+    worktree_path = worktree_setup(git_repo, task)
+
+    # The returned path must exist on disk
+    assert isinstance(worktree_path, Path)
+    assert worktree_path.exists()
+    assert worktree_path.is_dir()
+
+    # The path must be under .clade-worktrees/ with pattern <id>-<uuid8>
+    assert worktree_path.parent == git_repo / ".clade-worktrees"
+    assert worktree_path.name.startswith(f"{task.id}-")
+    # uuid8 suffix: 8 hex characters after the task id and a dash
+    suffix = worktree_path.name[len(task.id) + 1:]
+    assert len(suffix) == 8
+    assert all(c in "0123456789abcdef" for c in suffix)
+
+
+# ---------------------------------------------------------------------------
+# T4-6: _worktree_setup — raises RunnerError when git command fails
+# ---------------------------------------------------------------------------
+
+
+def test_worktree_setup_失敗時にRunnerErrorが送出される(git_repo: Path, monkeypatch):
+    """_worktree_setup raises RunnerError when the underlying git command fails.
+
+    Red: _worktree_setup does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+    from clade_parallel.manifest import load_manifest
+
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: worktree-fail-test
+tasks:
+  - id: fail-task
+    agent: developer
+    read_only: false
+---
+"""
+    manifest_file = git_repo / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    # Simulate git worktree add failure by making subprocess.run raise CalledProcessError.
+    original_run = subprocess.run
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        if "worktree" in cmd and "add" in cmd:
+            raise subprocess.CalledProcessError(
+                returncode=128, cmd=cmd, output="", stderr="fatal: git error"
+            )
+        return original_run(cmd, **kwargs)
+
+    monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
+
+    worktree_setup = getattr(runner_module, "_worktree_setup")
+
+    with pytest.raises(RunnerError):
+        worktree_setup(git_repo, task)
+
+
+# ---------------------------------------------------------------------------
+# T4-7: _worktree_cleanup — removes an existing worktree
+# ---------------------------------------------------------------------------
+
+
+def test_worktree_cleanup_存在するworktreeを削除する(git_repo: Path):
+    """_worktree_cleanup removes the worktree directory from disk.
+
+    Red: _worktree_cleanup does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+    from clade_parallel.manifest import load_manifest
+
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: worktree-cleanup-test
+tasks:
+  - id: cleanup-task
+    agent: developer
+    read_only: false
+---
+"""
+    manifest_file = git_repo / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    # First create a worktree to clean up.
+    worktree_setup = getattr(runner_module, "_worktree_setup")
+    worktree_path = worktree_setup(git_repo, task)
+    assert worktree_path.exists(), "Precondition: worktree must exist before cleanup"
+
+    worktree_cleanup = getattr(runner_module, "_worktree_cleanup")
+    worktree_cleanup(git_repo, worktree_path)
+
+    # After cleanup, the worktree directory must be gone.
+    assert not worktree_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# T4-8: _worktree_cleanup — best-effort: does NOT propagate exceptions on failure
+# ---------------------------------------------------------------------------
+
+
+def test_worktree_cleanup_失敗時に例外を伝播しない(git_repo: Path, monkeypatch):
+    """_worktree_cleanup must not raise even when the git command fails (best-effort).
+
+    Red: _worktree_cleanup does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    # Create a dummy path that never existed (simulates cleanup failure scenario).
+    nonexistent_path = git_repo / ".clade-worktrees" / "no-such-task-deadbeef"
+
+    # Also patch subprocess.run so git worktree remove fails.
+    original_run = subprocess.run
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        if "worktree" in cmd and "remove" in cmd:
+            raise subprocess.CalledProcessError(
+                returncode=128, cmd=cmd, output="", stderr="fatal: no such worktree"
+            )
+        return original_run(cmd, **kwargs)
+
+    monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
+
+    worktree_cleanup = getattr(runner_module, "_worktree_cleanup")
+
+    # Must NOT raise — best-effort cleanup swallows all exceptions.
+    try:
+        worktree_cleanup(git_repo, nonexistent_path)
+    except Exception as exc:  # noqa: BLE001
+        pytest.fail(
+            f"_worktree_cleanup must not propagate exceptions, but raised: {exc!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T4-9: _execute_task with read_only=True and git_root — uses task.cwd (no worktree)
+# ---------------------------------------------------------------------------
+
+
+def test_execute_task_read_only_Trueのときtaskのcwdでsubprocessが走る(
+    monkeypatch, tmp_path
+):
+    """_execute_task with read_only=True and git_root uses task.cwd (worktree not created).
+
+    Red: _execute_task currently has no git_root parameter → TypeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    captured_cwds: list[Path | None] = []
+
+    # Patch Popen to capture cwd and return immediately with exit 0.
+    class _CwdCapturingPopen:
+        def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+            captured_cwds.append(kwargs.get("cwd"))
+            self.returncode = 0
+            self.pid = 1
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            return ("", "")
+
+        def kill(self) -> None:
+            pass
+
+    monkeypatch.setattr(runner_module.subprocess, "Popen", _CwdCapturingPopen)
+
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: read-only-true-test
+tasks:
+  - id: ro-task
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    manifest_file = tmp_path / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    execute_task = getattr(runner_module, "_execute_task")
+    # Pass git_root even though read_only=True — should be ignored and use task.cwd.
+    fake_git_root = tmp_path / "fake_git_root"
+    execute_task(task, "claude", git_root=fake_git_root)
+
+    assert len(captured_cwds) == 1
+    # For read_only=True, subprocess must run in task.cwd, NOT inside worktree.
+    assert captured_cwds[0] == task.cwd
+
+
+# ---------------------------------------------------------------------------
+# T4-10: _execute_task with read_only=False — subprocess runs inside worktree
+# ---------------------------------------------------------------------------
+
+
+def test_execute_task_read_only_Falseのときworktreeのcwdでsubprocessが走る(
+    git_repo: Path, monkeypatch
+):
+    """_execute_task with read_only=False runs subprocess inside the worktree directory.
+
+    Red: _execute_task has no git_root parameter → TypeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    captured_cwds: list[Path | None] = []
+
+    # Patch _worktree_setup to return a known fake path without real git ops.
+    fake_worktree_path = git_repo / ".clade-worktrees" / "write-task-abcd1234"
+    fake_worktree_path.mkdir(parents=True, exist_ok=True)
+
+    def fake_worktree_setup(git_root: Path, task: Any) -> Path:
+        return fake_worktree_path
+
+    def fake_worktree_cleanup(git_root: Path, worktree_path: Path) -> None:
+        pass
+
+    # Patch Popen to capture cwd.
+    class _CwdCapturingPopen:
+        def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+            captured_cwds.append(kwargs.get("cwd"))
+            self.returncode = 0
+            self.pid = 1
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            return ("", "")
+
+        def kill(self) -> None:
+            pass
+
+    monkeypatch.setattr(runner_module, "_worktree_setup", fake_worktree_setup)
+    monkeypatch.setattr(runner_module, "_worktree_cleanup", fake_worktree_cleanup)
+    monkeypatch.setattr(runner_module.subprocess, "Popen", _CwdCapturingPopen)
+
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: read-only-false-test
+tasks:
+  - id: write-task
+    agent: developer
+    read_only: false
+---
+"""
+    manifest_file = git_repo / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    execute_task = getattr(runner_module, "_execute_task")
+    execute_task(task, "claude", git_root=git_repo)
+
+    assert len(captured_cwds) == 1
+    # For read_only=False, subprocess must run inside the worktree, not task.cwd.
+    assert captured_cwds[0] == fake_worktree_path
+
+
+# ---------------------------------------------------------------------------
+# T4-11: _execute_task with read_only=False — worktree deleted after success
+# ---------------------------------------------------------------------------
+
+
+def test_execute_task_read_only_False成功後にworktreeが削除される(
+    git_repo: Path, monkeypatch
+):
+    """After successful _execute_task with read_only=False, the worktree is removed.
+
+    Red: _execute_task has no git_root parameter → TypeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    cleanup_calls: list[Path] = []
+    fake_worktree_path = git_repo / ".clade-worktrees" / "write-task-00000001"
+    fake_worktree_path.mkdir(parents=True, exist_ok=True)
+
+    def fake_worktree_setup(git_root: Path, task: Any) -> Path:
+        return fake_worktree_path
+
+    def fake_worktree_cleanup(git_root: Path, worktree_path: Path) -> None:
+        cleanup_calls.append(worktree_path)
+        # Simulate actual directory removal.
+        if worktree_path.exists():
+            import shutil
+
+            shutil.rmtree(worktree_path)
+
+    class _SuccessPopen:
+        def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+            self.returncode = 0
+            self.pid = 1
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            return ("done", "")
+
+        def kill(self) -> None:
+            pass
+
+    monkeypatch.setattr(runner_module, "_worktree_setup", fake_worktree_setup)
+    monkeypatch.setattr(runner_module, "_worktree_cleanup", fake_worktree_cleanup)
+    monkeypatch.setattr(runner_module.subprocess, "Popen", _SuccessPopen)
+
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: cleanup-success-test
+tasks:
+  - id: write-task
+    agent: developer
+    read_only: false
+---
+"""
+    manifest_file = git_repo / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    execute_task = getattr(runner_module, "_execute_task")
+    execute_task(task, "claude", git_root=git_repo)
+
+    # Cleanup must have been called exactly once.
+    assert len(cleanup_calls) == 1
+    assert cleanup_calls[0] == fake_worktree_path
+    assert not fake_worktree_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# T4-12: _execute_task with read_only=False — worktree deleted even on task failure
+# ---------------------------------------------------------------------------
+
+
+def test_execute_task_read_only_Falseタスク失敗時でもworktreeが削除される(
+    git_repo: Path, monkeypatch
+):
+    """Worktree must be cleaned up via try/finally even when the task returns non-zero.
+
+    Red: _execute_task has no git_root parameter → TypeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    cleanup_calls: list[Path] = []
+    fake_worktree_path = git_repo / ".clade-worktrees" / "write-task-00000002"
+    fake_worktree_path.mkdir(parents=True, exist_ok=True)
+
+    def fake_worktree_setup(git_root: Path, task: Any) -> Path:
+        return fake_worktree_path
+
+    def fake_worktree_cleanup(git_root: Path, worktree_path: Path) -> None:
+        cleanup_calls.append(worktree_path)
+        if worktree_path.exists():
+            import shutil
+
+            shutil.rmtree(worktree_path)
+
+    class _FailPopen:
+        """Popen that exits with returncode=1 (task failure)."""
+
+        def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+            self.returncode = 1
+            self.pid = 1
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            return ("", "error from agent")
+
+        def kill(self) -> None:
+            pass
+
+    monkeypatch.setattr(runner_module, "_worktree_setup", fake_worktree_setup)
+    monkeypatch.setattr(runner_module, "_worktree_cleanup", fake_worktree_cleanup)
+    monkeypatch.setattr(runner_module.subprocess, "Popen", _FailPopen)
+
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: cleanup-failure-test
+tasks:
+  - id: write-task
+    agent: developer
+    read_only: false
+---
+"""
+    manifest_file = git_repo / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    execute_task = getattr(runner_module, "_execute_task")
+    result = execute_task(task, "claude", git_root=git_repo)
+
+    # Task must have failed (returncode=1, ok=False).
+    assert result.returncode == 1
+    assert result.ok is False
+
+    # Cleanup must still have been called (try/finally guarantee).
+    assert len(cleanup_calls) == 1
+    assert not fake_worktree_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# T4-13: _execute_task with read_only=False — worktree setup failure → RunnerError
+# ---------------------------------------------------------------------------
+
+
+def test_execute_task_read_only_Falseでworktree作成失敗時にRunnerErrorが発生する(
+    git_repo: Path, monkeypatch
+):
+    """When _worktree_setup raises RunnerError, _execute_task must propagate it.
+
+    Red: _execute_task has no git_root parameter → TypeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    def failing_worktree_setup(git_root: Path, task: Any) -> Path:
+        raise RunnerError("simulated worktree setup failure")
+
+    monkeypatch.setattr(runner_module, "_worktree_setup", failing_worktree_setup)
+
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: setup-fail-test
+tasks:
+  - id: write-task
+    agent: developer
+    read_only: false
+---
+"""
+    manifest_file = git_repo / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    execute_task = getattr(runner_module, "_execute_task")
+
+    with pytest.raises(RunnerError, match="simulated worktree setup failure"):
+        execute_task(task, "claude", git_root=git_repo)

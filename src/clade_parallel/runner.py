@@ -11,10 +11,11 @@ import subprocess
 import time
 import traceback
 import uuid
-from collections.abc import Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Callable, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ._exceptions import CladeParallelError
 from .manifest import Manifest, Task, load_manifest
@@ -287,6 +288,196 @@ def _execute_task(task: Task, claude_exe: str, *, git_root: Path | None = None) 
 
 
 # ---------------------------------------------------------------------------
+# Dependency Scheduler
+# ---------------------------------------------------------------------------
+
+
+class _DependencyScheduler:
+    """Schedules tasks respecting ``depends_on`` DAG constraints.
+
+    Tasks with no unresolved dependencies are submitted immediately to the
+    executor.  When a task completes, its downstream dependents have their
+    indegree decremented; tasks that reach indegree 0 are submitted next.
+
+    Args:
+        tasks: Ordered list of Task objects from the manifest.
+        executor: A ``ThreadPoolExecutor`` used to submit work.
+        execute_fn: Callable ``(Task) -> TaskResult`` injected at construction
+            time so that unit tests can substitute a fake implementation.
+    """
+
+    def __init__(
+        self,
+        tasks: Sequence[Task],
+        executor: ThreadPoolExecutor,
+        execute_fn: Callable[[Task], TaskResult],
+    ) -> None:
+        self._tasks: Sequence[Task] = tasks
+        self._executor: ThreadPoolExecutor = executor
+        self._execute_fn: Callable[[Task], TaskResult] = execute_fn
+
+        # Map task_id -> Task for O(1) lookup.
+        self._tasks_by_id: dict[str, Task] = {t.id: t for t in tasks}
+
+        # indegree[task_id] = number of unresolved direct dependencies.
+        self._indegree: dict[str, int] = {t.id: len(t.depends_on) for t in tasks}
+
+        # reverse_deps[task_id] = list of task_ids that depend on this task.
+        self._reverse_deps: dict[str, list[str]] = {t.id: [] for t in tasks}
+        for task in tasks:
+            for dep_id in task.depends_on:
+                self._reverse_deps[dep_id].append(task.id)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _should_skip(self, task: Task, results: dict[str, TaskResult]) -> bool:
+        """Return True when any dependency of *task* did not succeed.
+
+        A skipped dependency has ``ok == False`` so the check propagates
+        transitively without special-casing.
+
+        Args:
+            task: The task to evaluate.
+            results: Mapping of completed task_ids to their TaskResult.
+
+        Returns:
+            True if the task should be skipped due to a failed dependency.
+        """
+        return any(not results[dep_id].ok for dep_id in task.depends_on)
+
+    def _make_skipped(self, task: Task) -> TaskResult:
+        """Build a synthetic skipped TaskResult for *task*.
+
+        Args:
+            task: The task that is being skipped.
+
+        Returns:
+            A TaskResult with ``skipped=True`` and ``returncode=None``.
+        """
+        return TaskResult(
+            task_id=task.id,
+            agent=task.agent,
+            returncode=None,
+            stdout="",
+            stderr="",
+            timed_out=False,
+            duration_sec=0.0,
+            skipped=True,
+        )
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+
+    def run(self) -> tuple[TaskResult, ...]:
+        """Execute all tasks respecting dependency order.
+
+        Tasks whose indegree is 0 (no unresolved deps) are submitted first.
+        After each Future completes, downstream tasks are unlocked and
+        submitted if their indegree drops to 0.
+
+        RunnerError from ``execute_fn`` is captured; only the first one is
+        re-raised after all tasks have settled.
+
+        Returns:
+            Tuple of TaskResult in manifest declaration order.
+
+        Raises:
+            RunnerError: The first RunnerError raised by ``execute_fn``, if any.
+        """
+        results: dict[str, TaskResult] = {}
+        # Map Future -> Task for identification on completion.
+        future_to_task: dict[Future[TaskResult], Task] = {}
+        runner_error: RunnerError | None = None
+
+        # Submit all tasks that have no dependencies.
+        pending: set[Future[TaskResult]] = set()
+        for task in self._tasks:
+            if self._indegree[task.id] == 0:
+                future: Future[TaskResult] = self._executor.submit(
+                    self._execute_fn, task
+                )
+                future_to_task[future] = task
+                pending.add(future)
+
+        # Process futures as they complete.
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                task = future_to_task[future]
+                exc = future.exception()
+
+                if exc is not None:
+                    if isinstance(exc, RunnerError):
+                        if runner_error is None:
+                            runner_error = exc
+                        # Treat the task as failed so downstream tasks skip.
+                        task_result = self._make_skipped(task)
+                        task_result = TaskResult(
+                            task_id=task.id,
+                            agent=task.agent,
+                            returncode=None,
+                            stdout="",
+                            stderr=str(exc),
+                            timed_out=False,
+                            duration_sec=0.0,
+                        )
+                    else:
+                        raise exc
+                else:
+                    task_result = future.result()
+
+                results[task.id] = task_result
+
+                # Unlock downstream tasks.
+                for downstream_id in self._reverse_deps[task.id]:
+                    self._indegree[downstream_id] -= 1
+                    if self._indegree[downstream_id] == 0:
+                        downstream_task = self._tasks_by_id[downstream_id]
+                        if self._should_skip(downstream_task, results):
+                            results[downstream_id] = self._make_skipped(
+                                downstream_task
+                            )
+                            # Propagate skip to further downstream tasks.
+                            self._propagate_skip(downstream_task, results)
+                        else:
+                            new_future: Future[TaskResult] = self._executor.submit(
+                                self._execute_fn, downstream_task
+                            )
+                            future_to_task[new_future] = downstream_task
+                            pending.add(new_future)
+
+        if runner_error is not None:
+            raise runner_error
+
+        # Return results in manifest declaration order.
+        return tuple(results[t.id] for t in self._tasks)
+
+    def _propagate_skip(
+        self, skipped_task: Task, results: dict[str, TaskResult]
+    ) -> None:
+        """Recursively mark all downstream tasks of *skipped_task* as skipped.
+
+        Called when a task is skipped before being submitted (indegree just
+        reached 0 but has a failed dependency).  Its downstream tasks also
+        need to be pre-empted so they do not wait forever.
+
+        Args:
+            skipped_task: The task that was just marked skipped.
+            results: Accumulated results dict (mutated in place).
+        """
+        for downstream_id in self._reverse_deps[skipped_task.id]:
+            if downstream_id in results:
+                continue
+            self._indegree[downstream_id] -= 1
+            downstream_task = self._tasks_by_id[downstream_id]
+            results[downstream_id] = self._make_skipped(downstream_task)
+            self._propagate_skip(downstream_task, results)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -320,36 +511,24 @@ def run_manifest(
     tasks: Sequence[Task] = manifest.tasks
     workers = max_workers if max_workers is not None else max(1, len(tasks))
 
-    futures: list[Future[TaskResult]] = []
-    runner_error: RunnerError | None = None
+    # Determine the default working directory for git root resolution.
+    default_cwd = Path.cwd()
+
+    # If the manifest contains any write (non-read-only) tasks, the git root
+    # must be resolvable before submitting any work.
+    has_write_tasks = any(not t.read_only for t in tasks)
+    git_root: Path | None = None
+    if has_write_tasks:
+        git_root = _require_git_root(default_cwd)
+
+    # Build execute_fn closure that captures the resolved git_root.
+    claude_exe = claude_executable
+
+    def execute_fn(task: Task) -> TaskResult:
+        return _execute_task(task, claude_exe, git_root=git_root)
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        for task in tasks:
-            # Pass git_root=None for all tasks in the legacy (non-scheduler) path.
-            # All read_only=True tasks run in task.cwd without worktree setup.
-            future: Future[TaskResult] = executor.submit(
-                _execute_task, task, claude_executable
-            )
-            futures.append(future)
+        scheduler = _DependencyScheduler(tasks, executor, execute_fn)
+        task_results: tuple[TaskResult, ...] = scheduler.run()
 
-    # Collect results in submission order; propagate RunnerError if any occurred.
-    # Multiple RunnerErrors are collapsed: only the first one is reported;
-    # subsequent ones are suppressed.
-    task_results: list[TaskResult] = []
-    for future in futures:
-        exc = future.exception()
-        if exc is None:
-            task_results.append(future.result())
-            continue
-        if isinstance(exc, RunnerError):
-            if runner_error is None:
-                runner_error = exc
-            # Subsequent RunnerError instances are suppressed.
-            continue
-        # BaseException-family (KeyboardInterrupt, SystemExit) propagates here.
-        raise exc
-
-    if runner_error is not None:
-        raise runner_error
-
-    return RunResult(results=tuple(task_results))
+    return RunResult(results=task_results)
