@@ -533,3 +533,418 @@ tasks:
     task = result.tasks[0]
     assert task.env.get("FOO") == "bar"
     assert task.env.get("MY_VAR") == "hello world"
+
+
+# ---------------------------------------------------------------------------
+# T3 Writes field tests (Red phase — 17 cases)
+# ---------------------------------------------------------------------------
+
+
+def test_writes省略時にwritesが空タプルになる(manifest_file):
+    """writes: omitted in v0.1 manifest — task.writes defaults to empty tuple."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.tasks[0].writes == ()
+
+
+def test_writes空リスト明示時にwritesが空タプルになる(manifest_file):
+    """writes: [] explicit — task.writes is an empty tuple."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    writes: []
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.tasks[0].writes == ()
+
+
+def test_writes単一要素がパースされる(manifest_file, tmp_path):
+    """writes: ["a.txt"] — task.writes contains the normalized absolute path."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    writes:
+      - a.txt
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    task = result.tasks[0]
+    assert len(task.writes) == 1
+    # The path should be an absolute POSIX string
+    assert task.writes[0].endswith("/a.txt") or task.writes[0].endswith("\\a.txt") or "a.txt" in task.writes[0]
+
+
+def test_writes相対パスがcwdを基準に絶対化される(tmp_path):
+    """Relative writes paths are resolved against the task's cwd."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "writer",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "writes": ["out.txt"],
+            }
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    result = load_manifest(manifest_path)
+    task = result.tasks[0]
+    # cwd defaults to manifest directory; out.txt should resolve to tmp_path/out.txt
+    expected = (tmp_path / "out.txt").resolve().as_posix()
+    assert task.writes == (expected,)
+
+
+def test_writes絶対パスがそのまま保存される(manifest_file, tmp_path):
+    """Absolute paths in writes are stored as-is (resolved)."""
+    abs_path = (tmp_path / "abs_output.txt").as_posix()
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "writer",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "writes": [abs_path],
+            }
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    result = load_manifest(manifest_path)
+    task = result.tasks[0]
+    assert len(task.writes) == 1
+    # Absolute path should be preserved (resolved)
+    assert task.writes[0] == abs_path
+
+
+def test_clade_plan_version_0_2が受理される(manifest_file):
+    """clade_plan_version: "0.2" is accepted after SUPPORTED_PLAN_VERSIONS update."""
+    content = """\
+---
+clade_plan_version: "0.2"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.clade_plan_version == "0.2"
+
+
+def test_v01マニフェストにwritesがあっても受理される(manifest_file):
+    """v0.1 manifest with writes: field is accepted (ADR-005 supplement)."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    writes:
+      - output.txt
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert len(result.tasks) == 1
+    assert len(result.tasks[0].writes) == 1
+
+
+def test_writesがstring型のときManifestErrorが送出される(manifest_file):
+    """writes: "not-a-list" raises ManifestError."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    writes: "not-a-list"
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+def test_writesがdict型のときManifestErrorが送出される(manifest_file):
+    """writes: {key: value} raises ManifestError."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    writes:
+      key: value
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+def test_writes要素がstring以外のときManifestErrorが送出される(manifest_file):
+    """writes: [123] — non-string element raises ManifestError."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "review",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "writes": [123],
+            }
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+def test_writes要素が空文字列のときManifestErrorが送出される(manifest_file):
+    """writes: [""] — empty string element raises ManifestError."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    writes:
+      - ""
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+def test_2タスクが同一パスを宣言するとManifestErrorが送出される(tmp_path):
+    """Two tasks declaring the same writes path raise ManifestError with both IDs."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "task-a",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "writes": ["output.txt"],
+            },
+            {
+                "id": "task-b",
+                "agent": "security-reviewer",
+                "read_only": True,
+                "writes": ["output.txt"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(manifest_path)
+
+    msg = str(exc_info.value)
+    assert "task-a" in msg
+    assert "task-b" in msg
+    assert "output.txt" in msg
+
+
+def test_3タスク以上が同一パスを宣言するとManifestErrorで全ID列挙される(tmp_path):
+    """Three tasks with the same writes path raise ManifestError listing all IDs."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {"id": f"task-{c}", "agent": "code-reviewer", "read_only": True, "writes": ["shared.txt"]}
+            for c in ["a", "b", "c"]
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(manifest_path)
+
+    msg = str(exc_info.value)
+    for task_id in ["task-a", "task-b", "task-c"]:
+        assert task_id in msg
+
+
+def test_複数パスが独立に衝突する場合全衝突が1つのエラーに含まれる(tmp_path):
+    """Multiple independent path conflicts are all reported in a single ManifestError."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "task-1",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "writes": ["alpha.txt", "beta.txt"],
+            },
+            {
+                "id": "task-2",
+                "agent": "security-reviewer",
+                "read_only": True,
+                "writes": ["alpha.txt", "beta.txt"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(manifest_path)
+
+    msg = str(exc_info.value)
+    assert "alpha.txt" in msg
+    assert "beta.txt" in msg
+
+
+def test_ドット相対パスと通常相対パスが同一cwdで衝突検出される(tmp_path):
+    """./a.txt and a.txt under the same cwd are detected as the same path (normalization)."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "task-x",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "writes": ["./a.txt"],
+            },
+            {
+                "id": "task-y",
+                "agent": "security-reviewer",
+                "read_only": True,
+                "writes": ["a.txt"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(manifest_path)
+
+    msg = str(exc_info.value)
+    assert "task-x" in msg
+    assert "task-y" in msg
+
+
+def test_同一タスク内で同じパスが2回書かれてもエラーにならない(manifest_file):
+    """Duplicate paths within a single task's writes list do not raise ManifestError."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    writes:
+      - a.txt
+      - a.txt
+---
+"""
+    path = manifest_file(content)
+    # Should NOT raise — intra-task duplicates are allowed (YAGNI)
+    result = load_manifest(path)
+    assert len(result.tasks) == 1
+
+
+def test_別々のcwdでも正規化後が同一なら衝突扱い(tmp_path):
+    """Tasks with different cwd but writes normalizing to the same absolute path conflict."""
+    import yaml
+
+    # subdir is a subdirectory of tmp_path
+    subdir = tmp_path / "sub"
+    subdir.mkdir()
+
+    # task-1: cwd=tmp_path, writes="out.txt" -> tmp_path/out.txt
+    # task-2: cwd=subdir,   writes="../out.txt" -> tmp_path/out.txt  (same!)
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "task-1",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "cwd": str(tmp_path),
+                "writes": ["out.txt"],
+            },
+            {
+                "id": "task-2",
+                "agent": "security-reviewer",
+                "read_only": True,
+                "cwd": str(subdir),
+                "writes": ["../out.txt"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(manifest_path)
+
+    msg = str(exc_info.value)
+    assert "task-1" in msg
+    assert "task-2" in msg
