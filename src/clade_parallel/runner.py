@@ -279,7 +279,7 @@ def _setup_worktree(git_root: Path, task: Task) -> tuple[Path, str | None]:
     if isinstance(result, tuple):
         return result
     # Legacy mock returned a bare Path — treat branch_name as None.
-    return result, None  # type: ignore[return-value]
+    return result, None
 
 
 def _abort_merge(cwd: Path, timeout: int = _GIT_COMMAND_TIMEOUT_SEC) -> None:
