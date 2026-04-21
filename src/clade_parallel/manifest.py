@@ -251,6 +251,41 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
     )
 
 
+def _check_writes_conflicts(tasks: tuple[Task, ...]) -> None:
+    """Detect static write-conflicts across tasks.
+
+    A conflict occurs when two or more tasks declare the same normalized
+    absolute path in their ``writes`` field. Paths are compared as strings
+    after normalization by ``_normalize_write_path``.
+
+    Args:
+        tasks: All parsed tasks from the manifest, in manifest order.
+
+    Raises:
+        ManifestError: If any path is declared by two or more tasks. The
+            message lists every conflicting path along with the task IDs
+            that declared it, sorted deterministically.
+    """
+    # Map: normalized_path -> list of task IDs (in manifest order).
+    # Use a set per task to avoid counting intra-task duplicates as conflicts
+    # (same-task duplicate writes are allowed per spec).
+    claims: dict[str, list[str]] = {}
+    for task in tasks:
+        for path in set(task.writes):
+            claims.setdefault(path, []).append(task.id)
+
+    conflicts = {path: ids for path, ids in claims.items() if len(ids) >= 2}
+    if not conflicts:
+        return
+
+    # Build a deterministic, human-readable message.
+    lines = ["Write-path conflict(s) detected in manifest:"]
+    for path in sorted(conflicts):
+        ids = ", ".join(conflicts[path])
+        lines.append(f"  - '{path}' declared by tasks: {ids}")
+    raise ManifestError("\n".join(lines))
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -319,6 +354,8 @@ def load_manifest(path: str | Path) -> Manifest:
     default_cwd = resolved.parent.resolve()
 
     tasks = tuple(_parse_task(raw_task, default_cwd) for raw_task in raw_tasks)
+
+    _check_writes_conflicts(tasks)
 
     return Manifest(
         path=resolved,
