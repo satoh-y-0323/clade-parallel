@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import time
 import traceback
@@ -195,6 +196,15 @@ def _worktree_setup(git_root: Path, task: Task) -> tuple[Path, str]:
         raise RunnerError(
             f"Failed to create worktree for task {task.id!r} at {worktree_path}: {exc}"
         ) from exc
+
+    # Copy settings.local.json into the worktree so that claude -p running
+    # inside it inherits the same permissions as the main worktree.
+    # The file is gitignored and therefore absent from the worktree checkout.
+    settings_local = git_root / ".claude" / "settings.local.json"
+    if settings_local.exists():
+        dest_dir = worktree_path / ".claude"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(settings_local, dest_dir / "settings.local.json")
 
     return worktree_path, branch_name
 
