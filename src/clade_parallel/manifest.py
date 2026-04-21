@@ -59,6 +59,11 @@ class Task:
         timeout_sec: Maximum execution time in seconds.
         cwd: Working directory for the agent process.
         env: Additional environment variables for the agent process.
+        writes: Tuple of absolute, normalized filesystem paths (as strings)
+            that this task declares it will write. Empty tuple if omitted.
+            Used by load_manifest() to detect static write-conflicts between
+            tasks before execution. This field is optional and defaults to
+            an empty tuple for backward compatibility with v0.1 manifests.
     """
 
     id: str
@@ -68,6 +73,7 @@ class Task:
     timeout_sec: int
     cwd: Path
     env: dict[str, str]
+    writes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
