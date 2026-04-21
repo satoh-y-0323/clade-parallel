@@ -211,9 +211,7 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
     # This prevents path traversal attacks when task.id is used to construct
     # worktree directory paths (e.g., ".clade-worktrees/<task.id>-<uuid8>").
     if not isinstance(task_id, str):
-        raise ManifestError(
-            f"Task ID must be a string, got {type(task_id)!r}."
-        )
+        raise ManifestError(f"Task ID must be a string, got {type(task_id)!r}.")
     if not task_id or not _TASK_ID_PATTERN.match(task_id):
         raise ManifestError(
             f"Task ID {task_id!r} contains invalid characters. "
@@ -315,9 +313,7 @@ def _check_depends_on_refs(tasks: tuple[Task, ...]) -> None:
         return
 
     sorted_ids = ", ".join(sorted(undefined))
-    raise ManifestError(
-        f"depends_on references undefined task ID(s): {sorted_ids}"
-    )
+    raise ManifestError(f"depends_on references undefined task ID(s): {sorted_ids}")
 
 
 def _check_cyclic_dependencies(tasks: tuple[Task, ...]) -> None:
@@ -367,9 +363,7 @@ def _check_cyclic_dependencies(tasks: tuple[Task, ...]) -> None:
                     cycle_start_idx = path.index(neighbor)
                     cycle_path = path[cycle_start_idx:] + [neighbor]
                     cycle_str = " -> ".join(cycle_path)
-                    raise ManifestError(
-                        f"Cyclic dependency detected: {cycle_str}"
-                    )
+                    raise ManifestError(f"Cyclic dependency detected: {cycle_str}")
                 if color[neighbor] == WHITE:
                     dfs_stack.append((neighbor, path + [neighbor]))
                     found_next = True

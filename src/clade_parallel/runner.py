@@ -148,9 +148,7 @@ def _require_git_root(cwd: Path) -> Path:
             check=True,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-        raise RunnerError(
-            f"Not inside a git repository (cwd={cwd}): {exc}"
-        ) from exc
+        raise RunnerError(f"Not inside a git repository (cwd={cwd}): {exc}") from exc
 
     return Path(result.stdout.strip())
 
@@ -485,7 +483,7 @@ def _merge_write_branches(
         if merge_result.status == "conflict":
             # Fail-fast: collect remaining branch names for the error message.
             pending_branches = [
-                t.branch_name for t in eligible[i + 1:] if t.branch_name is not None
+                t.branch_name for t in eligible[i + 1 :] if t.branch_name is not None
             ]
             raise RunnerError(_build_conflict_message(merge_result, pending_branches))
 
@@ -762,9 +760,7 @@ class _DependencyScheduler:
                     if self._indegree[downstream_id] == 0:
                         downstream_task = self._tasks_by_id[downstream_id]
                         if self._should_skip(downstream_task, results):
-                            results[downstream_id] = self._make_skipped(
-                                downstream_task
-                            )
+                            results[downstream_id] = self._make_skipped(downstream_task)
                             # Propagate skip to further downstream tasks.
                             self._propagate_skip(downstream_task, results)
                         else:

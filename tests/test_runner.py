@@ -935,7 +935,7 @@ tasks:
     assert worktree_path.parent == git_repo / ".clade-worktrees"
     assert worktree_path.name.startswith(f"{task.id}-")
     # uuid8 suffix: 8 hex characters after the task id and a dash
-    suffix = worktree_path.name[len(task.id) + 1:]
+    suffix = worktree_path.name[len(task.id) + 1 :]
     assert len(suffix) == 8
     assert all(c in "0123456789abcdef" for c in suffix)
 

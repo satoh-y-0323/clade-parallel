@@ -54,9 +54,9 @@ def test_merge_single_branch_git_コマンドに_m_フラグが含まれる(
     Red: Current implementation uses '--no-edit' without '-m', so this check fails.
     """
     merge_single = getattr(runner_module, "_merge_single_branch", None)
-    assert merge_single is not None, (
-        "_merge_single_branch not found in clade_parallel.runner"
-    )
+    assert (
+        merge_single is not None
+    ), "_merge_single_branch not found in clade_parallel.runner"
 
     captured_cmds: list[list[str]] = []
 
@@ -79,21 +79,20 @@ def test_merge_single_branch_git_コマンドに_m_フラグが含まれる(
     merge_single(tmp_path, "main", task_id, branch)
 
     merge_cmds = [
-        cmd for cmd in captured_cmds
-        if "merge" in cmd and "--abort" not in cmd
+        cmd for cmd in captured_cmds if "merge" in cmd and "--abort" not in cmd
     ]
-    assert len(merge_cmds) >= 1, (
-        f"No 'git merge' command captured. All captured: {captured_cmds}"
-    )
+    assert (
+        len(merge_cmds) >= 1
+    ), f"No 'git merge' command captured. All captured: {captured_cmds}"
     merge_cmd = merge_cmds[0]
 
-    assert "-m" in merge_cmd, (
-        f"Expected '-m' flag in git merge command, but got: {merge_cmd}"
-    )
+    assert (
+        "-m" in merge_cmd
+    ), f"Expected '-m' flag in git merge command, but got: {merge_cmd}"
     expected_msg = f"Merge clade-parallel task {task_id}"
-    assert expected_msg in merge_cmd, (
-        f"Expected message {expected_msg!r} in git merge command, but got: {merge_cmd}"
-    )
+    assert (
+        expected_msg in merge_cmd
+    ), f"Expected message {expected_msg!r} in git merge command, but got: {merge_cmd}"
 
 
 # ---------------------------------------------------------------------------
@@ -110,9 +109,9 @@ def test_merge_single_branch_git_コマンドに_no_edit_が含まれない(
     Red: Current implementation uses '--no-edit', so this check fails.
     """
     merge_single = getattr(runner_module, "_merge_single_branch", None)
-    assert merge_single is not None, (
-        "_merge_single_branch not found in clade_parallel.runner"
-    )
+    assert (
+        merge_single is not None
+    ), "_merge_single_branch not found in clade_parallel.runner"
 
     captured_cmds: list[list[str]] = []
 
@@ -133,17 +132,16 @@ def test_merge_single_branch_git_コマンドに_no_edit_が含まれない(
     merge_single(tmp_path, "main", "task-abc", "clade-parallel/task-abc-12345678")
 
     merge_cmds = [
-        cmd for cmd in captured_cmds
-        if "merge" in cmd and "--abort" not in cmd
+        cmd for cmd in captured_cmds if "merge" in cmd and "--abort" not in cmd
     ]
-    assert len(merge_cmds) >= 1, (
-        f"No 'git merge' command captured. All captured: {captured_cmds}"
-    )
+    assert (
+        len(merge_cmds) >= 1
+    ), f"No 'git merge' command captured. All captured: {captured_cmds}"
     merge_cmd = merge_cmds[0]
 
-    assert "--no-edit" not in merge_cmd, (
-        f"'--no-edit' must NOT appear when '-m' is used, but got: {merge_cmd}"
-    )
+    assert (
+        "--no-edit" not in merge_cmd
+    ), f"'--no-edit' must NOT appear when '-m' is used, but got: {merge_cmd}"
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +156,7 @@ def test_execute_task_ソースコードにisinstanceが含まれない():
     Red: Current implementation still contains the isinstance check.
     """
     execute_task = getattr(runner_module, "_execute_task", None)
-    assert execute_task is not None, (
-        "_execute_task not found in clade_parallel.runner"
-    )
+    assert execute_task is not None, "_execute_task not found in clade_parallel.runner"
 
     source = inspect.getsource(execute_task)
     assert "isinstance" not in source, (
@@ -184,9 +180,9 @@ def test_sanitize_git_stderr_関数が存在する():
         "_sanitize_git_stderr not found in clade_parallel.runner. "
         "This function must be implemented as part of T16."
     )
-    assert callable(sanitize), (
-        f"_sanitize_git_stderr must be callable, got {type(sanitize).__name__}"
-    )
+    assert callable(
+        sanitize
+    ), f"_sanitize_git_stderr must be callable, got {type(sanitize).__name__}"
 
 
 # ---------------------------------------------------------------------------
@@ -205,15 +201,15 @@ def test_sanitize_git_stderr_ANSIエスケープシーケンスを除去する()
     ansi_input = "\x1b[31mred text\x1b[0m normal text"
     result = sanitize(ansi_input)
 
-    assert "\x1b" not in result, (
-        f"ANSI escape '\\x1b' still present in output: {result!r}"
-    )
-    assert "red text" in result, (
-        f"Visible text 'red text' was unexpectedly removed. Output: {result!r}"
-    )
-    assert "normal text" in result, (
-        f"Visible text 'normal text' was unexpectedly removed. Output: {result!r}"
-    )
+    assert (
+        "\x1b" not in result
+    ), f"ANSI escape '\\x1b' still present in output: {result!r}"
+    assert (
+        "red text" in result
+    ), f"Visible text 'red text' was unexpectedly removed. Output: {result!r}"
+    assert (
+        "normal text" in result
+    ), f"Visible text 'normal text' was unexpectedly removed. Output: {result!r}"
 
 
 def test_sanitize_git_stderr_複数のANSIシーケンスを除去する():
@@ -225,9 +221,9 @@ def test_sanitize_git_stderr_複数のANSIシーケンスを除去する():
     result = sanitize(ansi_input)
 
     # No ANSI escape chars remain
-    assert not re.search(r"\x1b\[", result), (
-        f"ANSI escape sequence still present in output: {result!r}"
-    )
+    assert not re.search(
+        r"\x1b\[", result
+    ), f"ANSI escape sequence still present in output: {result!r}"
     assert "Bold green" in result
     assert "blue" in result
     assert "text" in result
@@ -251,15 +247,15 @@ def test_sanitize_git_stderr_制御文字を除去する():
     result = sanitize(ctrl_input)
 
     # These control chars must be removed
-    for char_code in [0x00, 0x07, 0x08, 0x0b, 0x0c, 0x0e, 0x1f]:
+    for char_code in [0x00, 0x07, 0x08, 0x0B, 0x0C, 0x0E, 0x1F]:
         char = chr(char_code)
-        assert char not in result, (
-            f"Control character \\x{char_code:02x} still present in output: {result!r}"
-        )
+        assert (
+            char not in result
+        ), f"Control character \\x{char_code:02x} still present in output: {result!r}"
 
-    assert "normal text" in result, (
-        f"Visible text unexpectedly removed. Output: {result!r}"
-    )
+    assert (
+        "normal text" in result
+    ), f"Visible text unexpectedly removed. Output: {result!r}"
 
 
 def test_sanitize_git_stderr_改行とタブは保持する():
@@ -273,12 +269,8 @@ def test_sanitize_git_stderr_改行とタブは保持する():
     input_with_whitespace = "line1\nline2\r\ncolumn\there"
     result = sanitize(input_with_whitespace)
 
-    assert "\n" in result, (
-        f"\\n (newline) was unexpectedly removed. Output: {result!r}"
-    )
-    assert "\t" in result, (
-        f"\\t (tab) was unexpectedly removed. Output: {result!r}"
-    )
+    assert "\n" in result, f"\\n (newline) was unexpectedly removed. Output: {result!r}"
+    assert "\t" in result, f"\\t (tab) was unexpectedly removed. Output: {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -297,13 +289,15 @@ def test_sanitize_git_stderr_2001文字以上はトランケートされる():
     long_input = "x" * 3000
     result = sanitize(long_input)
 
-    assert len(result) <= 2000 + 100, (  # allow some suffix like "[truncated N bytes]"
+    assert (
+        len(result) <= 2000 + 100
+    ), (  # allow some suffix like "[truncated N bytes]"
         f"Output length {len(result)} exceeds 2100 chars (2000 + suffix allowance)"
     )
     # The result should be shorter than the input
-    assert len(result) < len(long_input), (
-        f"Output length {len(result)} should be less than input length {len(long_input)}"
-    )
+    assert len(result) < len(
+        long_input
+    ), f"Output length {len(result)} should be less than input length {len(long_input)}"
 
 
 def test_sanitize_git_stderr_2000文字以下はトランケートされない():
@@ -315,9 +309,9 @@ def test_sanitize_git_stderr_2000文字以下はトランケートされない()
     result = sanitize(exact_input)
 
     # Should be preserved entirely (no truncation)
-    assert "a" * 2000 in result, (
-        f"2000-char input was unexpectedly truncated. Output length: {len(result)}"
-    )
+    assert (
+        "a" * 2000 in result
+    ), f"2000-char input was unexpectedly truncated. Output length: {len(result)}"
 
 
 # ---------------------------------------------------------------------------
@@ -335,12 +329,8 @@ def test_sanitize_git_stderr_空文字列で例外にならない():
 
     # Must not raise
     result = sanitize("")
-    assert isinstance(result, str), (
-        f"Expected str return, got {type(result).__name__}"
-    )
-    assert result == "", (
-        f"Expected empty string output for empty input, got {result!r}"
-    )
+    assert isinstance(result, str), f"Expected str return, got {type(result).__name__}"
+    assert result == "", f"Expected empty string output for empty input, got {result!r}"
 
 
 def test_sanitize_git_stderr_空白のみの文字列で例外にならない():
@@ -349,9 +339,7 @@ def test_sanitize_git_stderr_空白のみの文字列で例外にならない():
     assert sanitize is not None, "_sanitize_git_stderr not found"
 
     result = sanitize("   \n  \t  ")
-    assert isinstance(result, str), (
-        f"Expected str return, got {type(result).__name__}"
-    )
+    assert isinstance(result, str), f"Expected str return, got {type(result).__name__}"
 
 
 # ---------------------------------------------------------------------------
@@ -365,9 +353,9 @@ def test_merge_result_status_フィールドがLiteral型である():
     Red: Current annotation is 'str', not Literal.
     """
     hints = typing.get_type_hints(MergeResult)
-    assert "status" in hints, (
-        f"'status' field not found in MergeResult type hints. Got: {list(hints.keys())}"
-    )
+    assert (
+        "status" in hints
+    ), f"'status' field not found in MergeResult type hints. Got: {list(hints.keys())}"
 
     status_type = hints["status"]
     origin = typing.get_origin(status_type)
