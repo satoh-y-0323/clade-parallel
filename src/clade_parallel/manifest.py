@@ -474,7 +474,9 @@ def _check_writes_conflicts(tasks: tuple[Task, ...]) -> None:
         for declared in task.writes:
             try:
                 key = Path(declared).resolve(strict=False).as_posix()
-            except OSError as e:
+            except (OSError, RuntimeError) as e:
+                # Python 3.11 converts ELOOP OSError to RuntimeError inside
+                # resolve(); catch both to handle all Python versions uniformly.
                 raise ManifestError(
                     f"Task '{task.id}': symlink loop detected"
                     f" in writes path '{declared}'."
