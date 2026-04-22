@@ -558,6 +558,8 @@ def _run_with_progress(
     def _watchdog() -> None:
         while True:
             now = time.perf_counter()
+            # Snapshot last_ts before sleeping; the value is used only for computing
+            # the next sleep duration, not for the idle-timeout decision.
             with last_output_lock:
                 last_ts = last_output_ts[0]
             total_remaining = task.timeout_sec - (now - start)
