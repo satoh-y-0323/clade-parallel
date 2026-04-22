@@ -412,7 +412,8 @@ def _check_writes_conflicts(tasks: tuple[Task, ...]) -> None:
                 key = Path(declared).resolve(strict=False).as_posix()
             except OSError as e:
                 raise ManifestError(
-                    f"Task '{task.id}': symlink loop detected in writes path '{declared}'."
+                    f"Task '{task.id}': symlink loop detected"
+                    f" in writes path '{declared}'."
                 ) from e
             if key in seen_keys:
                 continue  # intra-task duplicate — ignored per spec
