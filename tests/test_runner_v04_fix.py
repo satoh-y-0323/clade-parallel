@@ -384,7 +384,7 @@ def test_merge_result_status_Literal値に不正な文字列は含まれない()
         pytest.skip("Status type is not Literal — covered by other test")
 
     args = typing.get_args(status_type)
-    valid_values = {"merged", "conflict", "error", "pending"}
+    valid_values = {"merged", "conflict", "error"}
 
     for arg in args:
         assert arg in valid_values, (

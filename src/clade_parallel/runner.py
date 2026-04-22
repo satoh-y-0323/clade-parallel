@@ -59,7 +59,7 @@ class MergeResult:
 
     task_id: str
     branch_name: str
-    status: Literal["merged", "conflict", "error", "pending"]
+    status: Literal["merged", "conflict", "error"]
     stderr: str
 
 
