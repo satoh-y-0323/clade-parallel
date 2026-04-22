@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Fixed: `writes:` conflict error messages no longer leak resolved symlink target paths. Paths shown in `ManifestError` are now the user-declared paths as written in the manifest (ADR-011).
+
+### Changed
+- Breaking (internal semantics): `Task.writes` now holds user-declared absolute paths (symlinks intact, `..` segments normalized) instead of resolved paths. The resolved path is used internally only for conflict detection. See ADR-011 for details.
+
 ## [0.1.0] - 2026-04-21
 
 ### Added
