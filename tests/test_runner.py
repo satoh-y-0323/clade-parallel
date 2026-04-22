@@ -1455,11 +1455,27 @@ def test_idle_タイムアウト経路でtimeout_reason_idleになる(monkeypatc
     Arrange: idle_timeout_sec=1, timeout_sec=60 (total will not fire).
     The FakePopen produces no stdout, so the idle watchdog fires first.
     _PROGRESS_INTERVAL_SEC is patched to 0.05 for test speed.
+    read_only=False is used to verify idle timeout is active for write tasks.
+    Git/worktree operations are stubbed out to isolate the timeout logic.
     """
     import clade_parallel.runner as runner_module
 
     monkeypatch.setattr(runner_module, "_PROGRESS_INTERVAL_SEC", 0.05)
     monkeypatch.setattr(runner_module.subprocess, "Popen", _IdleBlockingFakePopen)
+    monkeypatch.setattr(
+        runner_module, "_require_git_root", lambda cwd: tmp_path
+    )
+    monkeypatch.setattr(
+        runner_module, "_resolve_merge_base_branch", lambda cwd, timeout=30: "main"
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_worktree_setup",
+        lambda git_root, task: (tmp_path, "clade-parallel/slow-task-stub"),
+    )
+    monkeypatch.setattr(
+        runner_module, "_worktree_cleanup", lambda git_root, worktree_path: None
+    )
 
     idle_manifest = """\
 ---
@@ -1468,7 +1484,7 @@ name: idle-timeout-test
 tasks:
   - id: slow-task
     agent: code-reviewer
-    read_only: true
+    read_only: false
     idle_timeout_sec: 1
     timeout_sec: 60
 ---
