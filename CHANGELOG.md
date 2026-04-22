@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-22
+
 ### Security
 - Fixed: `writes:` conflict error messages no longer leak resolved symlink target paths. Paths shown in `ManifestError` are now the user-declared paths as written in the manifest (ADR-011).
 
