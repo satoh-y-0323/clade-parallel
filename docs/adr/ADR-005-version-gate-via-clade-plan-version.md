@@ -1,7 +1,7 @@
 # ADR-005: Version gate via `clade_plan_version` using `SUPPORTED_PLAN_VERSIONS` frozenset
 
 - **Date:** 2026-04-20
-- **Status:** Accepted
+- **Status:** Accepted (partially superseded by ADR-006 — see "ADR-006 との関係" in ADR-006 for detail)
 
 ## Context
 

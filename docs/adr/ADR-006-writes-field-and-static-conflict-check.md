@@ -1,7 +1,8 @@
 # ADR-006: `writes:` フィールドと静的衝突検査の導入
 
 - **Date:** 2026-04-21
-- **Status:** Accepted (partially superseded by ADR-011)
+- **Status:** Accepted (partially supersedes ADR-005; partially superseded by ADR-011)
+- **Supersedes (partially):** ADR-005 — the assumption that `writes:` and other unrecognised keys are silently ignored is overridden for `writes:`, which is explicitly processed in both v0.1 and v0.2 manifests
 
 ## Context
 
