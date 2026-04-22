@@ -111,9 +111,7 @@ def _format_summary_line(result: TaskResult) -> str:
     """
     label = _status_label(result)
     returncode_str = str(result.returncode) if result.returncode is not None else "None"
-    reason = (
-        f" ({result.timeout_reason} timeout)" if result.timeout_reason else ""
-    )
+    reason = f" ({result.timeout_reason} timeout)" if result.timeout_reason else ""
     return (
         f"[{label}] {result.task_id} ({result.agent})"
         f" duration={result.duration_sec:.2f}"

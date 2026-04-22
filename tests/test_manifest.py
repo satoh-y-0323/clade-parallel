@@ -616,6 +616,7 @@ tasks:
     task = result.tasks[0]
     assert len(task.writes) == 1
     import os
+
     # T2 (N6 fix, ADR-011): _normalize_write_path uses os.path.normpath instead of
     # Path.resolve() to avoid symlink expansion in task.writes.
     expected = Path(os.path.normpath(path.parent.resolve() / "a.txt")).as_posix()
@@ -644,6 +645,7 @@ def test_writes相対パスがcwdを基準に絶対化される(tmp_path):
     result = load_manifest(manifest_path)
     task = result.tasks[0]
     import os
+
     # cwd defaults to the manifest directory (resolve()d); out.txt is normalized via normpath.
     # T2 (N6 fix, ADR-011): _normalize_write_path uses os.path.normpath instead of resolve().
     expected = Path(os.path.normpath(tmp_path.resolve() / "out.txt")).as_posix()
@@ -1562,6 +1564,7 @@ tasks:
         ]
     )
 
+
 # ---------------------------------------------------------------------------
 # N6: symlink path leak prevention tests
 #
@@ -1973,12 +1976,12 @@ def test_衝突エラーメッセージが多行フォーマットで宣言パ�
         f"but got: {msg!r}"
     )
     # Each task's declared path must appear as a separate bullet line.
-    assert "* task-a:" in msg or "* task-a" in msg, (
-        f"Expected bullet entry for task-a in message, got: {msg!r}"
-    )
-    assert "* task-b:" in msg or "* task-b" in msg, (
-        f"Expected bullet entry for task-b in message, got: {msg!r}"
-    )
+    assert (
+        "* task-a:" in msg or "* task-a" in msg
+    ), f"Expected bullet entry for task-a in message, got: {msg!r}"
+    assert (
+        "* task-b:" in msg or "* task-b" in msg
+    ), f"Expected bullet entry for task-b in message, got: {msg!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -2027,13 +2030,13 @@ def test_Windows的パスでもPOSIX文字列で正規化される(tmp_path):
     assert len(task.writes) == 1
     stored_path = task.writes[0]
     # Must not contain Windows-style backslashes.
-    assert "\\" not in stored_path, (
-        f"Path must use POSIX forward slashes, but got: {stored_path!r}"
-    )
+    assert (
+        "\\" not in stored_path
+    ), f"Path must use POSIX forward slashes, but got: {stored_path!r}"
     # Must end with the declared filename.
-    assert stored_path.endswith("/output.txt"), (
-        f"Path must end with '/output.txt', but got: {stored_path!r}"
-    )
+    assert stored_path.endswith(
+        "/output.txt"
+    ), f"Path must end with '/output.txt', but got: {stored_path!r}"
 
 
 # ---------------------------------------------------------------------------

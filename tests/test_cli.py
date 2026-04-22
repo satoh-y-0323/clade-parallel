@@ -391,17 +391,15 @@ class TestPrintTimeoutTail:
 
         captured = capsys.readouterr()
         # Must go to stderr, NOT stdout
-        assert "Last 20 lines" in captured.err, (
-            f"Expected 'Last 20 lines' in stderr, got err={captured.err!r}"
-        )
+        assert (
+            "Last 20 lines" in captured.err
+        ), f"Expected 'Last 20 lines' in stderr, got err={captured.err!r}"
         # The final line of the original stdout must appear
-        assert "line 30" in captured.err, (
-            f"Expected 'line 30' in stderr, got err={captured.err!r}"
-        )
+        assert (
+            "line 30" in captured.err
+        ), f"Expected 'line 30' in stderr, got err={captured.err!r}"
         # Must NOT appear in stdout
-        assert captured.out == "", (
-            f"Expected empty stdout, got: {captured.out!r}"
-        )
+        assert captured.out == "", f"Expected empty stdout, got: {captured.out!r}"
 
     def test_stdoutが空の場合は何も出力されない(self, capsys) -> None:
         """Empty stdout: _print_timeout_tail produces no output at all."""
@@ -428,8 +426,8 @@ class TestPrintTimeoutTail:
         captured = capsys.readouterr()
         # All lines must be present in stderr
         for line in lines:
-            assert line in captured.err, (
-                f"Expected '{line}' in stderr, got: {captured.err!r}"
-            )
+            assert (
+                line in captured.err
+            ), f"Expected '{line}' in stderr, got: {captured.err!r}"
         # Must NOT appear in stdout
         assert captured.out == "", f"Expected empty stdout, got: {captured.out!r}"

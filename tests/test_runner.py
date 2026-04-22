@@ -1462,9 +1462,7 @@ def test_idle_タイムアウト経路でtimeout_reason_idleになる(monkeypatc
 
     monkeypatch.setattr(runner_module, "_PROGRESS_INTERVAL_SEC", 0.05)
     monkeypatch.setattr(runner_module.subprocess, "Popen", _IdleBlockingFakePopen)
-    monkeypatch.setattr(
-        runner_module, "_require_git_root", lambda cwd: tmp_path
-    )
+    monkeypatch.setattr(runner_module, "_require_git_root", lambda cwd: tmp_path)
     monkeypatch.setattr(
         runner_module, "_resolve_merge_base_branch", lambda cwd, timeout=30: "main"
     )
@@ -1495,9 +1493,9 @@ tasks:
     assert len(result.results) == 1
     tr = result.results[0]
     assert tr.timed_out is True, f"Expected timed_out=True, got {tr.timed_out}"
-    assert tr.timeout_reason == "idle", (
-        f"Expected timeout_reason='idle', got {tr.timeout_reason!r}"
-    )
+    assert (
+        tr.timeout_reason == "idle"
+    ), f"Expected timeout_reason='idle', got {tr.timeout_reason!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -1533,9 +1531,9 @@ tasks:
     assert len(result.results) == 1
     tr = result.results[0]
     assert tr.timed_out is True, f"Expected timed_out=True, got {tr.timed_out}"
-    assert tr.timeout_reason == "total", (
-        f"Expected timeout_reason='total', got {tr.timeout_reason!r}"
-    )
+    assert (
+        tr.timeout_reason == "total"
+    ), f"Expected timeout_reason='total', got {tr.timeout_reason!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -1590,9 +1588,9 @@ tasks:
     stderr_output = captured.err
     # At least one progress line should contain the task id and 'running...'
     # or 'thinking...' pattern
-    assert "[watch-task]" in stderr_output, (
-        f"Expected '[watch-task]' in stderr, got: {stderr_output!r}"
-    )
-    assert "running..." in stderr_output or "thinking..." in stderr_output, (
-        f"Expected 'running...' or 'thinking...' in stderr, got: {stderr_output!r}"
-    )
+    assert (
+        "[watch-task]" in stderr_output
+    ), f"Expected '[watch-task]' in stderr, got: {stderr_output!r}"
+    assert (
+        "running..." in stderr_output or "thinking..." in stderr_output
+    ), f"Expected 'running...' or 'thinking...' in stderr, got: {stderr_output!r}"
