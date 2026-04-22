@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import subprocess
 import threading
 import time
@@ -42,12 +43,17 @@ def fake_claude_runner(monkeypatch):
             assert recorder["calls"][0]["returncode"] == 0
 
     Outcomes list keys (all optional):
-        returncode (int):       Exit code returned by the fake process. Default 0.
-        stdout (str):           Captured stdout. Default "".
-        stderr (str):           Captured stderr. Default "".
-        exception (Exception):  If set, Popen() raises this instead of returning.
-        sleep_sec (float):      Seconds to sleep before communicate() returns. Default 0.
-        record_thread (bool):   Whether to record the calling thread's ident (default True).
+        returncode (int):           Exit code returned by the fake process. Default 0.
+        stdout (str):               Captured stdout. Default "".
+        stderr (str):               Captured stderr. Default "".
+        exception (Exception):      If set, Popen() raises this instead of returning.
+                                    FileNotFoundError is raised at construction time;
+                                    others are raised from wait().
+        sleep_sec (float):          Seconds to sleep in wait() before returning. Default 0.
+        block_until_killed (bool):  If True, wait() blocks until kill() is called.
+                                    Use with a short timeout_sec in the manifest to
+                                    simulate a process that runs until the watchdog fires.
+        record_thread (bool):       Whether to record the calling thread's ident (default True).
 
     Returns a recorder dict with:
         calls (list[dict]):     Per-call outcome specs consumed in order.
@@ -81,29 +87,26 @@ def fake_claude_runner(monkeypatch):
                 self._sleep_sec = sleep_sec
                 self.returncode: int | None = spec.get("returncode", 0)
                 self.pid: int = 0
-                self._communicate_call_count: int = 0
+                self._killed_event = threading.Event()
+                # Provide iterable streams for _run_with_progress() reader threads.
+                self.stdout = io.StringIO(spec.get("stdout", ""))
+                self.stderr = io.StringIO(spec.get("stderr", ""))
 
-            def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-                """Return stdout/stderr after optional sleep; raise on spec exception.
-
-                TimeoutExpired is raised only on the first call so that the
-                kill() + communicate() flush sequence in _execute_task works
-                correctly (second call returns empty buffers).
-                """
-                self._communicate_call_count += 1
+            def wait(self) -> int | None:
+                if self._spec.get("block_until_killed"):
+                    # Block until kill() fires — used for timeout simulation.
+                    self._killed_event.wait()
+                    return self.returncode
                 if self._sleep_sec > 0:
                     time.sleep(self._sleep_sec)
                 exc = self._spec.get("exception")
-                # Raise the spec exception only on the first communicate() call.
-                # On subsequent calls (post-kill flush), return empty strings.
-                if exc is not None and self._communicate_call_count == 1:
+                if exc is not None and not isinstance(exc, FileNotFoundError):
                     raise exc
-                stdout: str = self._spec.get("stdout", "")
-                stderr: str = self._spec.get("stderr", "")
-                return (stdout, stderr)
+                return self.returncode
 
             def kill(self) -> None:
-                """No-op kill for fake process."""
+                """Signal the killed event and unblock wait()."""
+                self._killed_event.set()
 
         def fake_popen(*args: Any, **kwargs: Any) -> FakePopenInstance:
             # Determine which outcome spec to use (thread-safe).

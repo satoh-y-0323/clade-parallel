@@ -6,9 +6,11 @@ because ``clade_parallel.runner`` does not exist yet.
 
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -41,6 +43,22 @@ tasks:
 ---
 """
 
+# Same as MINIMAL_TWO_TASKS but task-a has timeout_sec=1 for fast timeout tests.
+MINIMAL_TWO_TASKS_A_TIMEOUT_1 = """\
+---
+clade_plan_version: "0.1"
+name: runner-test-short-timeout
+tasks:
+  - id: task-a
+    agent: code-reviewer
+    read_only: true
+    timeout_sec: 1
+  - id: task-b
+    agent: security-reviewer
+    read_only: true
+---
+"""
+
 SINGLE_TASK = """\
 ---
 clade_plan_version: "0.1"
@@ -49,6 +67,18 @@ tasks:
   - id: only-task
     agent: code-reviewer
     read_only: true
+---
+"""
+
+SINGLE_TASK_SHORT_TIMEOUT = """\
+---
+clade_plan_version: "0.1"
+name: single-task-short-timeout-test
+tasks:
+  - id: only-task
+    agent: code-reviewer
+    read_only: true
+    timeout_sec: 1
 ---
 """
 
@@ -125,14 +155,14 @@ def test_タイムアウト発生時はtimed_outがTrueになり他タスクは�
     fake_claude_runner, tmp_path
 ):
     """TimeoutExpired on one task → timed_out=True, returncode=None, other task runs."""
-    timeout_exc = subprocess.TimeoutExpired(cmd=["claude", "-p", "prompt"], timeout=900)
     outcomes = [
-        {"exception": timeout_exc},
+        # task-a: blocks until the watchdog kills it (timeout_sec=1 in manifest)
+        {"block_until_killed": True},
         {"returncode": 0, "stdout": "other ok", "stderr": ""},
     ]
     fake_claude_runner(outcomes)
 
-    manifest = _make_manifest(tmp_path, MINIMAL_TWO_TASKS)
+    manifest = _make_manifest(tmp_path, MINIMAL_TWO_TASKS_A_TIMEOUT_1)
     result = run_manifest(manifest)
 
     timed_out_results = [tr for tr in result.results if tr.timed_out]
@@ -568,10 +598,9 @@ tasks:
 
 
 class FakePopen:
-    """Fake subprocess.Popen for testing timeout kill behavior.
+    """Fake subprocess.Popen that exits immediately with returncode=None.
 
-    On the first call to communicate(timeout=...), raises TimeoutExpired.
-    The second call to communicate() (no timeout) returns empty strings.
+    Provides stdout/stderr as empty StringIO streams and a no-op wait().
     Records kill() invocations via kill_call_count.
     """
 
@@ -580,28 +609,43 @@ class FakePopen:
         self.returncode: int | None = None
         self.pid: int = 99999
         self.kill_call_count: int = 0
-        self._communicate_calls: int = 0
+        self.stdout = io.StringIO("")
+        self.stderr = io.StringIO("")
 
-    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-        """Simulate communicate(); raise TimeoutExpired on the first call."""
-        self._communicate_calls += 1
-        if self._communicate_calls == 1:
-            # First call: simulate timeout
-            raise subprocess.TimeoutExpired(cmd=self.cmd, timeout=timeout or 0)
-        # Second call (after kill): return empty buffers
-        return ("", "")
+    def wait(self) -> int | None:
+        return self.returncode
 
     def kill(self) -> None:
         """Record kill() invocation."""
         self.kill_call_count += 1
 
 
+class _BlockingFakePopen(FakePopen):
+    """FakePopen whose wait() blocks until kill() is called.
+
+    Use for timeout tests: the process appears to run forever until the
+    watchdog fires and calls kill().
+    """
+
+    def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+        super().__init__(cmd, **kwargs)
+        self._killed_event = threading.Event()
+
+    def wait(self) -> int | None:
+        self._killed_event.wait()
+        return self.returncode
+
+    def kill(self) -> None:
+        super().kill()
+        self._killed_event.set()
+
+
 # Module-level registry so the test can inspect the FakePopen instance after the run.
-_fake_popen_instances: list[FakePopen] = []
+_fake_popen_instances: list[_BlockingFakePopen] = []
 
 
-class _TrackingFakePopen(FakePopen):
-    """FakePopen that registers itself in the module-level list on creation."""
+class _TrackingFakePopen(_BlockingFakePopen):
+    """_BlockingFakePopen that registers itself in the module-level list on creation."""
 
     def __init__(self, cmd: list[str], **kwargs: Any) -> None:
         super().__init__(cmd, **kwargs)
@@ -619,7 +663,8 @@ def test_タイムアウト時に子プロセスがkillされる(monkeypatch, tm
     _fake_popen_instances.clear()
     monkeypatch.setattr("clade_parallel.runner.subprocess.Popen", _TrackingFakePopen)
 
-    manifest = _make_manifest(tmp_path, SINGLE_TASK)
+    # Use a short timeout_sec=1 so the watchdog fires quickly.
+    manifest = _make_manifest(tmp_path, SINGLE_TASK_SHORT_TIMEOUT)
 
     # Act: run_manifest should handle the timeout internally via Popen
     result = run_manifest(manifest)
@@ -1088,9 +1133,11 @@ def test_execute_task_read_only_Trueのときtaskのcwdでsubprocessが走る(
             captured_cwds.append(kwargs.get("cwd"))
             self.returncode = 0
             self.pid = 1
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
 
-        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-            return ("", "")
+        def wait(self) -> int | None:
+            return self.returncode
 
         def kill(self) -> None:
             pass
@@ -1154,9 +1201,11 @@ def test_execute_task_read_only_Falseのときworktreeのcwdでsubprocessが走�
             captured_cwds.append(kwargs.get("cwd"))
             self.returncode = 0
             self.pid = 1
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
 
-        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-            return ("", "")
+        def wait(self) -> int | None:
+            return self.returncode
 
         def kill(self) -> None:
             pass
@@ -1221,9 +1270,11 @@ def test_execute_task_read_only_False成功後にworktreeが削除される(
         def __init__(self, cmd: list[str], **kwargs: Any) -> None:
             self.returncode = 0
             self.pid = 1
+            self.stdout = io.StringIO("done")
+            self.stderr = io.StringIO("")
 
-        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-            return ("done", "")
+        def wait(self) -> int | None:
+            return self.returncode
 
         def kill(self) -> None:
             pass
@@ -1290,9 +1341,11 @@ def test_execute_task_read_only_Falseタスク失敗時でもworktreeが削除�
         def __init__(self, cmd: list[str], **kwargs: Any) -> None:
             self.returncode = 1
             self.pid = 1
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("error from agent")
 
-        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-            return ("", "error from agent")
+        def wait(self) -> int | None:
+            return self.returncode
 
         def kill(self) -> None:
             pass

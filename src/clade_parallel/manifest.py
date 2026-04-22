@@ -81,6 +81,8 @@ class Task:
             starts. Duplicates are removed while preserving insertion order.
             Empty tuple if omitted. load_manifest() validates that all
             referenced IDs exist and that no cyclic dependency is present.
+        idle_timeout_sec: If set, the task is killed when no output has been
+            produced for this many seconds. None means no idle timeout.
     """
 
     id: str
@@ -92,6 +94,7 @@ class Task:
     env: dict[str, str]
     writes: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
+    idle_timeout_sec: int | None = None
 
 
 @dataclass(frozen=True)
@@ -238,6 +241,8 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
     # Optional fields with defaults.
     prompt: str = raw.get("prompt", f"/agent-{agent}")
     timeout_sec: int = int(raw.get("timeout_sec", 900))
+    idle_timeout_raw = raw.get("idle_timeout_sec")
+    idle_timeout_sec: int | None = int(idle_timeout_raw) if idle_timeout_raw is not None else None
 
     # Validate env keys against the blocklist before constructing the dict.
     raw_env: dict[str, str] = raw.get("env", {}) or {}
@@ -298,6 +303,7 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
         env=env,
         writes=writes,
         depends_on=depends_on,
+        idle_timeout_sec=idle_timeout_sec,
     )
 
 

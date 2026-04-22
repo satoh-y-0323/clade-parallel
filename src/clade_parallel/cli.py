@@ -24,6 +24,7 @@ _EXIT_MANIFEST_ERROR = 2
 _EXIT_RUNNER_ERROR = 3
 
 _DEFAULT_CLAUDE_EXE = "claude"
+_TIMEOUT_TAIL_LINES = 20
 
 
 # ---------------------------------------------------------------------------
@@ -110,11 +111,26 @@ def _format_summary_line(result: TaskResult) -> str:
     """
     label = _status_label(result)
     returncode_str = str(result.returncode) if result.returncode is not None else "None"
+    reason = (
+        f" ({result.timeout_reason} timeout)" if result.timeout_reason else ""
+    )
     return (
         f"[{label}] {result.task_id} ({result.agent})"
         f" duration={result.duration_sec:.2f}"
         f" returncode={returncode_str}"
+        f"{reason}"
     )
+
+
+def _print_timeout_tail(result: TaskResult) -> None:
+    """Print the last N lines of stdout before a timeout."""
+    lines = result.stdout.splitlines()
+    tail = lines[-_TIMEOUT_TAIL_LINES:] if lines else []
+    if not tail:
+        return
+    print(f"  Last {len(tail)} lines before timeout:")
+    for line in tail:
+        print(f"  > {line}")
 
 
 def _print_summary(run_result: RunResult, *, quiet: bool) -> None:
@@ -131,6 +147,8 @@ def _print_summary(run_result: RunResult, *, quiet: bool) -> None:
         if quiet and is_success:
             continue
         print(_format_summary_line(result))
+        if result.timed_out:
+            _print_timeout_tail(result)
 
 
 # ---------------------------------------------------------------------------

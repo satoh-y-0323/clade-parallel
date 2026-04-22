@@ -7,6 +7,7 @@ fake_claude_runner fixture to avoid real process spawning.
 
 from __future__ import annotations
 
+import io
 import sys
 import threading
 import time
@@ -207,14 +208,16 @@ class TestRaceConditionGuard:
             def __init__(self, *args: Any, **kwargs: Any) -> None:
                 self.returncode: int | None = 0
                 self.pid: int = 0
+                self.stdout = io.StringIO("")
+                self.stderr = io.StringIO("")
 
-            def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-                """Simulate communicate with a short sleep and atomic counter update."""
+            def wait(self) -> int | None:
+                """Simulate wait with a short sleep and atomic counter update."""
                 time.sleep(0.1)
                 nonlocal counter
                 with lock:
                     counter += 1
-                return ("", "")
+                return self.returncode
 
             def kill(self) -> None:
                 """No-op kill."""

@@ -10,6 +10,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import threading
 import time
 import traceback
 import uuid
@@ -17,7 +19,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import IO, Literal
 
 from ._exceptions import CladeParallelError
 from .manifest import Manifest, Task, load_manifest
@@ -31,6 +33,8 @@ _CLAUDE_PROMPT_FLAG = "-p"
 _WORKTREE_ROOT_NAME = ".clade-worktrees"
 _GIT_COMMAND_TIMEOUT_SEC = 30
 _CONFLICT_STDERR_MAX_CHARS = 2000
+_PROGRESS_INTERVAL_SEC = 5
+_LAST_LINES_ON_TIMEOUT = 20
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -88,6 +92,7 @@ class TaskResult:
     duration_sec: float
     skipped: bool = False
     branch_name: str | None = None
+    timeout_reason: Literal["total", "idle"] | None = None
 
     @property
     def ok(self) -> bool:
@@ -514,6 +519,95 @@ def _worktree_cleanup(git_root: Path, worktree_path: Path) -> None:
         pass
 
 
+def _run_with_progress(
+    proc: subprocess.Popen[str],
+    task: Task,
+    start: float,
+) -> tuple[str, str, bool, Literal["total", "idle"] | None]:
+    """Run *proc* to completion with progress reporting and dual timeout.
+
+    Reads stdout/stderr line-by-line in daemon threads so both streams are
+    drained concurrently without deadlock.  A watchdog thread fires every
+    ``_PROGRESS_INTERVAL_SEC`` seconds to print status and enforce timeouts.
+
+    Returns:
+        (stdout, stderr, timed_out, timeout_reason)
+    """
+    lines_stdout: list[str] = []
+    lines_stderr: list[str] = []
+    last_output_ts: list[float] = [start]
+    done_event = threading.Event()
+    kill_reason: list[str] = []
+
+    def _reader(stream: IO[str], buf: list[str]) -> None:
+        for line in stream:
+            buf.append(line)
+            last_output_ts[0] = time.perf_counter()
+
+    stdout_thread = threading.Thread(
+        target=_reader, args=(proc.stdout, lines_stdout), daemon=True
+    )
+    stderr_thread = threading.Thread(
+        target=_reader, args=(proc.stderr, lines_stderr), daemon=True
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+
+    def _watchdog() -> None:
+        while True:
+            now = time.perf_counter()
+            total_remaining = task.timeout_sec - (now - start)
+            idle_remaining = (
+                task.idle_timeout_sec - (now - last_output_ts[0])
+                if task.idle_timeout_sec is not None
+                else float("inf")
+            )
+            sleep_sec = min(
+                _PROGRESS_INTERVAL_SEC,
+                max(0.05, min(total_remaining, idle_remaining)),
+            )
+            if done_event.wait(timeout=sleep_sec):
+                return  # process finished naturally
+
+            now = time.perf_counter()
+            idle = now - last_output_ts[0]
+            total = now - start
+
+            if idle < _PROGRESS_INTERVAL_SEC:
+                print(f"[{task.id}] running...", file=sys.stderr, flush=True)
+            else:
+                print(
+                    f"[{task.id}] thinking... {idle:.0f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+            if task.idle_timeout_sec is not None and idle >= task.idle_timeout_sec:
+                kill_reason.append("idle")
+                proc.kill()
+                return
+
+            if total >= task.timeout_sec:
+                kill_reason.append("total")
+                proc.kill()
+                return
+
+    watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
+    watchdog_thread.start()
+
+    proc.wait()
+    done_event.set()
+    watchdog_thread.join()
+    stdout_thread.join()
+    stderr_thread.join()
+
+    timed_out = bool(kill_reason)
+    reason: Literal["total", "idle"] | None = (
+        kill_reason[0] if kill_reason else None  # type: ignore[assignment]
+    )
+    return "".join(lines_stdout), "".join(lines_stderr), timed_out, reason
+
+
 def _execute_task(
     task: Task, claude_exe: str, *, git_root: Path | None = None
 ) -> TaskResult:
@@ -572,15 +666,10 @@ def _execute_task(
             raise RunnerError(f"claude executable not found: {claude_exe!r}") from exc
 
         try:
-            stdout, stderr = proc.communicate(timeout=task.timeout_sec)
-            timed_out = False
-            returncode: int | None = proc.returncode
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            # Flush remaining buffers after kill to avoid pipe deadlock.
-            stdout, stderr = proc.communicate()
-            timed_out = True
-            returncode = None
+            stdout, stderr, timed_out, timeout_reason = _run_with_progress(
+                proc, task, start
+            )
+            returncode: int | None = proc.returncode if not timed_out else None
         except Exception:
             duration_sec = time.perf_counter() - start
             return TaskResult(
@@ -602,11 +691,12 @@ def _execute_task(
         task_id=task.id,
         agent=task.agent,
         returncode=returncode,
-        stdout=stdout or "",
-        stderr=stderr or "",
+        stdout=stdout,
+        stderr=stderr,
         timed_out=timed_out,
         duration_sec=duration_sec,
         branch_name=branch_name,
+        timeout_reason=timeout_reason,
     )
 
 
