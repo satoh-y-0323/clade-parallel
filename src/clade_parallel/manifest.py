@@ -124,6 +124,40 @@ class Manifest:
 # ---------------------------------------------------------------------------
 
 
+def _parse_positive_int(raw: object, task_id: str, field_name: str) -> int:
+    """Parse *raw* as a positive integer for a task field.
+
+    Converts *raw* to ``int`` and verifies that the result is greater than
+    zero.  Both conversion errors and non-positive values raise
+    :class:`ManifestError` with the task ID and field name embedded so that
+    callers need not duplicate that context.
+
+    Args:
+        raw: The raw value from YAML (expected to be an int or int-convertible).
+        task_id: Identifier of the enclosing task (used in error messages).
+        field_name: The YAML field name being parsed (e.g. ``'timeout_sec'``).
+
+    Returns:
+        The parsed positive integer value.
+
+    Raises:
+        ManifestError: If *raw* cannot be converted to ``int``, or if the
+            resulting integer is not positive (``<= 0``).
+    """
+    try:
+        value: int = int(raw)  # type: ignore[call-overload]
+    except (TypeError, ValueError) as exc:
+        raise ManifestError(
+            f"Task '{task_id}': '{field_name}' must be an integer, got {raw!r}."
+        ) from exc
+    if value <= 0:
+        raise ManifestError(
+            f"Task '{task_id}': '{field_name}' must be a positive integer,"
+            f" got {value!r}."
+        )
+    return value
+
+
 def _normalize_write_path(raw: object, task_id: str, cwd: Path) -> str:
     """Normalize a single 'writes' entry to an absolute POSIX string.
 
@@ -246,37 +280,16 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
     # Optional fields with defaults.
     prompt: str = raw.get("prompt", f"/agent-{agent}")
 
-    timeout_raw = raw.get("timeout_sec", 900)
-    try:
-        timeout_sec_val = int(timeout_raw)
-    except (TypeError, ValueError) as exc:
-        raise ManifestError(
-            f"Task '{task_id}': 'timeout_sec' must be an integer, got {timeout_raw!r}."
-        ) from exc
-    if timeout_sec_val <= 0:
-        raise ManifestError(
-            f"Task '{task_id}': 'timeout_sec' must be a positive integer,"
-            f" got {timeout_sec_val!r}."
-        )
-    timeout_sec: int = timeout_sec_val
+    timeout_sec: int = _parse_positive_int(
+        raw.get("timeout_sec", 900), task_id, "timeout_sec"
+    )
 
     idle_timeout_raw = raw.get("idle_timeout_sec")
-    if idle_timeout_raw is not None:
-        try:
-            idle_timeout_sec_val = int(idle_timeout_raw)
-        except (TypeError, ValueError) as exc:
-            raise ManifestError(
-                f"Task '{task_id}': 'idle_timeout_sec' must be an integer,"
-                f" got {idle_timeout_raw!r}."
-            ) from exc
-        if idle_timeout_sec_val <= 0:
-            raise ManifestError(
-                f"Task '{task_id}': 'idle_timeout_sec' must be a positive integer,"
-                f" got {idle_timeout_sec_val!r}."
-            )
-        idle_timeout_sec: int | None = idle_timeout_sec_val
-    else:
-        idle_timeout_sec = None
+    idle_timeout_sec: int | None = (
+        _parse_positive_int(idle_timeout_raw, task_id, "idle_timeout_sec")
+        if idle_timeout_raw is not None
+        else None
+    )
 
     # Validate env keys against the blocklist before constructing the dict.
     raw_env: dict[str, str] = raw.get("env", {}) or {}
