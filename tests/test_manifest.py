@@ -2146,3 +2146,84 @@ tasks:
     path = manifest_file(content)
     with pytest.raises(ManifestError, match=r"timeout_sec"):
         load_manifest(path)
+
+
+# ---------------------------------------------------------------------------
+# T-idle-warn: idle_timeout_sec 警告出力テスト
+# ---------------------------------------------------------------------------
+
+
+def test_read_onlyタスクにidle_timeout_secが設定されると警告がstderrに出力される(
+    manifest_file, capsys
+):
+    """read_only: true + idle_timeout_sec: 30 => stderr contains the warning message."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    idle_timeout_sec: 30
+---
+"""
+    path = manifest_file(content)
+    load_manifest(path)
+    captured = capsys.readouterr()
+    assert "idle_timeout_sec is ignored for read_only tasks" in captured.err
+
+
+def test_read_onlyタスクのidle_timeout_secはTaskに保持される(manifest_file, capsys):
+    """read_only: true + idle_timeout_sec: 30 => task.idle_timeout_sec == 30 (value preserved)."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    idle_timeout_sec: 30
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.tasks[0].idle_timeout_sec == 30
+
+
+def test_read_only_falseでidle_timeout_sec設定時に警告が出ない(manifest_file, capsys):
+    """read_only: false + idle_timeout_sec: 30 => no warning in stderr."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: writer
+    agent: developer
+    read_only: false
+    idle_timeout_sec: 30
+---
+"""
+    path = manifest_file(content)
+    load_manifest(path)
+    captured = capsys.readouterr()
+    assert "idle_timeout_sec is ignored for read_only tasks" not in captured.err
+
+
+def test_read_onlyでidle_timeout_sec未指定時に警告が出ない(manifest_file, capsys):
+    """read_only: true + idle_timeout_sec omitted => no warning in stderr."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    load_manifest(path)
+    captured = capsys.readouterr()
+    assert "idle_timeout_sec is ignored for read_only tasks" not in captured.err
