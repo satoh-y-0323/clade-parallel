@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-23
+
+### Added
+- **Progress display**: real-time per-task progress is printed to stderr while tasks run, showing elapsed time and remaining timeout.
+- **Dual timeout (`idle_timeout_sec`)**: new optional manifest field that kills a task after N seconds of no stdout/stderr output, independent of the total `timeout_sec`. Useful for detecting hung agents.
+- **`idle_timeout_sec` auto-disable for `read_only` tasks**: agents running with `read_only: true` enter a silent synthesis phase after reading files. Setting `idle_timeout_sec` on such tasks would cause false timeouts; the runner now ignores it at runtime and emits a warning at manifest load time.
+
+### Fixed
+- Manifest parsing: `timeout_sec` and `idle_timeout_sec` now raise `ManifestError` for non-integer values and values ≤ 0 (previously accepted silently).
+- Runner: `last_output_ts` reads/writes are now protected by `threading.Lock`, eliminating a potential race condition in the watchdog thread.
+- CLI: timeout tail output (`_print_timeout_tail`) is now sent to `stderr` instead of `stdout`.
+
+### Refactored
+- Extracted `_parse_positive_int` helper in `manifest.py` to consolidate positive-integer parsing and error reporting for `timeout_sec` and `idle_timeout_sec`.
+
 ## [0.5.0] - 2026-04-22
 
 ### Security
