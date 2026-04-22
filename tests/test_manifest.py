@@ -2034,3 +2034,115 @@ def test_Windows的パスでもPOSIX文字列で正規化される(tmp_path):
     assert stored_path.endswith("/output.txt"), (
         f"Path must end with '/output.txt', but got: {stored_path!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# T7: idle_timeout_sec YAML パース検証テスト
+# ---------------------------------------------------------------------------
+
+
+def test_idle_timeout_secが正常にパースされる(manifest_file):
+    """idle_timeout_sec: 30 is correctly parsed into Task.idle_timeout_sec == 30."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    idle_timeout_sec: 30
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert len(result.tasks) == 1
+    assert result.tasks[0].idle_timeout_sec == 30
+
+
+def test_idle_timeout_sec未指定時はNone(manifest_file):
+    """idle_timeout_sec omitted => Task.idle_timeout_sec is None."""
+    path = manifest_file("""\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+""")
+    result = load_manifest(path)
+    assert result.tasks[0].idle_timeout_sec is None
+
+
+def test_idle_timeout_sec_0でManifestErrorが送出される(manifest_file):
+    """idle_timeout_sec: 0 raises ManifestError (must be positive)."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    idle_timeout_sec: 0
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r"idle_timeout_sec"):
+        load_manifest(path)
+
+
+def test_idle_timeout_sec_負値でManifestErrorが送出される(manifest_file):
+    """idle_timeout_sec: -1 raises ManifestError (must be positive)."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    idle_timeout_sec: -1
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r"idle_timeout_sec"):
+        load_manifest(path)
+
+
+def test_idle_timeout_sec_文字列でManifestErrorが送出される(manifest_file):
+    """idle_timeout_sec: 'abc' raises ManifestError (type conversion failure)."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    idle_timeout_sec: "abc"
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r"idle_timeout_sec"):
+        load_manifest(path)
+
+
+def test_timeout_sec_文字列でManifestErrorが送出される(manifest_file):
+    """timeout_sec: 'abc' raises ManifestError (symmetric type-wrap validation)."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    timeout_sec: "abc"
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r"timeout_sec"):
+        load_manifest(path)

@@ -350,3 +350,86 @@ class TestSummaryOutput:
         combined = captured.out + captured.err
         assert "security-reviewer" in combined
         assert "duration=" in combined
+
+
+# ---------------------------------------------------------------------------
+# T11: _print_timeout_tail() 出力内容テスト
+# ---------------------------------------------------------------------------
+
+
+class TestPrintTimeoutTail:
+    """Verify _print_timeout_tail() outputs the correct content to stderr."""
+
+    def _make_timed_out_result(
+        self,
+        stdout: str,
+        task_id: str = "t1",
+        agent: str = "code-reviewer",
+    ) -> TaskResult:
+        """Build a TaskResult that represents a timed-out task with given stdout."""
+        return TaskResult(
+            task_id=task_id,
+            agent=agent,
+            returncode=None,
+            stdout=stdout,
+            stderr="",
+            timed_out=True,
+            duration_sec=1.0,
+            timeout_reason="total",
+        )
+
+    def test_30行のstdoutで末尾20行がstderrに出力される(self, capsys) -> None:
+        """30 lines of stdout: _print_timeout_tail writes 'Last 20 lines' and the
+        final line to stderr (Phase A changed stdout -> stderr)."""
+        from clade_parallel import cli
+
+        lines = [f"line {i}" for i in range(1, 31)]
+        stdout_content = "\n".join(lines)
+        result = self._make_timed_out_result(stdout=stdout_content)
+
+        cli._print_timeout_tail(result)
+
+        captured = capsys.readouterr()
+        # Must go to stderr, NOT stdout
+        assert "Last 20 lines" in captured.err, (
+            f"Expected 'Last 20 lines' in stderr, got err={captured.err!r}"
+        )
+        # The final line of the original stdout must appear
+        assert "line 30" in captured.err, (
+            f"Expected 'line 30' in stderr, got err={captured.err!r}"
+        )
+        # Must NOT appear in stdout
+        assert captured.out == "", (
+            f"Expected empty stdout, got: {captured.out!r}"
+        )
+
+    def test_stdoutが空の場合は何も出力されない(self, capsys) -> None:
+        """Empty stdout: _print_timeout_tail produces no output at all."""
+        from clade_parallel import cli
+
+        result = self._make_timed_out_result(stdout="")
+
+        cli._print_timeout_tail(result)
+
+        captured = capsys.readouterr()
+        assert captured.out == "", f"Expected empty stdout, got: {captured.out!r}"
+        assert captured.err == "", f"Expected empty stderr, got: {captured.err!r}"
+
+    def test_20行以下の場合は全行が表示される(self, capsys) -> None:
+        """10 lines of stdout: all 10 lines appear in stderr output."""
+        from clade_parallel import cli
+
+        lines = [f"line {i}" for i in range(1, 11)]
+        stdout_content = "\n".join(lines)
+        result = self._make_timed_out_result(stdout=stdout_content)
+
+        cli._print_timeout_tail(result)
+
+        captured = capsys.readouterr()
+        # All lines must be present in stderr
+        for line in lines:
+            assert line in captured.err, (
+                f"Expected '{line}' in stderr, got: {captured.err!r}"
+            )
+        # Must NOT appear in stdout
+        assert captured.out == "", f"Expected empty stdout, got: {captured.out!r}"
