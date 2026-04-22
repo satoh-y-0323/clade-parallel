@@ -536,13 +536,15 @@ def _run_with_progress(
     lines_stdout: list[str] = []
     lines_stderr: list[str] = []
     last_output_ts: list[float] = [start]
+    last_output_lock = threading.Lock()
     done_event = threading.Event()
     kill_reason: list[str] = []
 
     def _reader(stream: IO[str], buf: list[str]) -> None:
         for line in stream:
             buf.append(line)
-            last_output_ts[0] = time.perf_counter()
+            with last_output_lock:
+                last_output_ts[0] = time.perf_counter()
 
     stdout_thread = threading.Thread(
         target=_reader, args=(proc.stdout, lines_stdout), daemon=True
@@ -556,9 +558,11 @@ def _run_with_progress(
     def _watchdog() -> None:
         while True:
             now = time.perf_counter()
+            with last_output_lock:
+                last_ts = last_output_ts[0]
             total_remaining = task.timeout_sec - (now - start)
             idle_remaining = (
-                task.idle_timeout_sec - (now - last_output_ts[0])
+                task.idle_timeout_sec - (now - last_ts)
                 if task.idle_timeout_sec is not None
                 else float("inf")
             )
@@ -570,7 +574,9 @@ def _run_with_progress(
                 return  # process finished naturally
 
             now = time.perf_counter()
-            idle = now - last_output_ts[0]
+            with last_output_lock:
+                last_ts = last_output_ts[0]
+            idle = now - last_ts
             total = now - start
 
             if idle < _PROGRESS_INTERVAL_SEC:
@@ -586,8 +592,7 @@ def _run_with_progress(
                 kill_reason.append("idle")
                 proc.kill()
                 return
-
-            if total >= task.timeout_sec:
+            elif total >= task.timeout_sec:
                 kill_reason.append("total")
                 proc.kill()
                 return

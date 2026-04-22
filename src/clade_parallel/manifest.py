@@ -240,9 +240,38 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
 
     # Optional fields with defaults.
     prompt: str = raw.get("prompt", f"/agent-{agent}")
-    timeout_sec: int = int(raw.get("timeout_sec", 900))
+
+    timeout_raw = raw.get("timeout_sec", 900)
+    try:
+        timeout_sec_val = int(timeout_raw)
+    except (TypeError, ValueError) as exc:
+        raise ManifestError(
+            f"Task '{task_id}': 'timeout_sec' must be an integer, got {timeout_raw!r}."
+        ) from exc
+    if timeout_sec_val <= 0:
+        raise ManifestError(
+            f"Task '{task_id}': 'timeout_sec' must be a positive integer,"
+            f" got {timeout_sec_val!r}."
+        )
+    timeout_sec: int = timeout_sec_val
+
     idle_timeout_raw = raw.get("idle_timeout_sec")
-    idle_timeout_sec: int | None = int(idle_timeout_raw) if idle_timeout_raw is not None else None
+    if idle_timeout_raw is not None:
+        try:
+            idle_timeout_sec_val = int(idle_timeout_raw)
+        except (TypeError, ValueError) as exc:
+            raise ManifestError(
+                f"Task '{task_id}': 'idle_timeout_sec' must be an integer,"
+                f" got {idle_timeout_raw!r}."
+            ) from exc
+        if idle_timeout_sec_val <= 0:
+            raise ManifestError(
+                f"Task '{task_id}': 'idle_timeout_sec' must be a positive integer,"
+                f" got {idle_timeout_sec_val!r}."
+            )
+        idle_timeout_sec: int | None = idle_timeout_sec_val
+    else:
+        idle_timeout_sec = None
 
     # Validate env keys against the blocklist before constructing the dict.
     raw_env: dict[str, str] = raw.get("env", {}) or {}

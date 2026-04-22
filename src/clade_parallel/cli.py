@@ -123,14 +123,22 @@ def _format_summary_line(result: TaskResult) -> str:
 
 
 def _print_timeout_tail(result: TaskResult) -> None:
-    """Print the last N lines of stdout before a timeout."""
+    """Print the last N lines of stdout captured before a timeout.
+
+    Output goes to stderr to avoid polluting redirected stdout. Note that
+    this may expose sensitive information (e.g., secrets in agent output)
+    when running in CI environments; see README for details.
+
+    Args:
+        result: The TaskResult whose stdout will be inspected.
+    """
     lines = result.stdout.splitlines()
     tail = lines[-_TIMEOUT_TAIL_LINES:] if lines else []
     if not tail:
         return
-    print(f"  Last {len(tail)} lines before timeout:")
+    print(f"  Last {len(tail)} lines before timeout:", file=sys.stderr)
     for line in tail:
-        print(f"  > {line}")
+        print(f"  > {line}", file=sys.stderr)
 
 
 def _print_summary(run_result: RunResult, *, quiet: bool) -> None:

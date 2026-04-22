@@ -168,6 +168,33 @@ clade-parallel --version
 clade-parallel --help
 ```
 
+### Timeout output (tail display)
+
+When a task times out (either `timeout_sec` or `idle_timeout_sec`), clade-parallel
+prints the last 20 lines of the task's stdout to **stderr** before reporting the
+result. This helps diagnose what the agent was doing at the moment of the timeout.
+
+```
+[timeout] my-task (general-purpose) duration=300.12 returncode=None (total timeout)
+  Last 20 lines before timeout:
+  > ...
+  > ...
+```
+
+**Important notes:**
+
+- The tail is always displayed for timed-out tasks, even when `--quiet` is specified.
+  (`--quiet` suppresses output only for successful tasks; timeouts are never considered
+  successful.)
+- The tail output goes to **stderr**, so it is not included when you redirect stdout
+  (e.g., `clade-parallel run manifest.md > output.txt`).
+- **CI environments**: Agent stdout may contain sensitive information such as API keys,
+  authentication tokens, or file contents read by the agent. If your CI job logs are
+  publicly visible (e.g., open-source GitHub Actions), ensure that no secrets appear in
+  agent output, or configure your CI to mask sensitive values before they reach the log.
+  There is currently no `--no-tail` flag; if you need to suppress this output entirely,
+  redirect stderr to `/dev/null` (`2>/dev/null`).
+
 ## Exit codes
 
 | Code | Meaning |
