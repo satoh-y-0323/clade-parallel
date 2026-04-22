@@ -1556,3 +1556,457 @@ tasks:
             "underscores",
         ]
     )
+
+# ---------------------------------------------------------------------------
+# N6: symlink path leak prevention tests
+#
+# These tests verify the fix for the symlink-target-path leakage issue
+# introduced in ADR-006 (v0.2).  They form the Red (failing) phase (T1)
+# before the developer implements the fix described in architecture-report
+# (plan-report-20260422-223359.md, T2).
+#
+# Affected-existing-test audit (T1 subtask g):
+# The following existing tests in this file assume that task.writes[i]
+# contains the Path.resolve()-ed absolute path.  They will become Red once
+# T2 is implemented and must be updated in T3:
+#
+#   - test_writes単一要素がパースされる (L618):
+#       `expected = (path.parent / "a.txt").resolve().as_posix()`
+#       → expects resolved path; must change to non-resolved after T2.
+#
+#   - test_writes相対パスがcwdを基準に絶対化される (L644):
+#       `expected = (tmp_path / "out.txt").resolve().as_posix()`
+#       → expects resolved path; must change to non-resolved after T2.
+#
+#   - test_別々のcwdでも正規化後が同一なら衝突扱い (L939-976):
+#       Uses `../out.txt` path traversal; error message assertions rely on
+#       old single-line format.  Must be verified in T3.
+#
+# These tests currently PASS under the old implementation (Green) because
+# the old code stores resolved paths.  After T2 they will become Red, and
+# T3 will update them to match the new declared-path semantics.
+# ---------------------------------------------------------------------------
+
+
+def _symlink_or_skip(src, dst) -> None:
+    """Create a symlink or skip the test if the OS refuses (e.g. Windows without privileges)."""
+    import os
+
+    try:
+        os.symlink(src, dst)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not supported on this platform/configuration")
+
+
+# ---------------------------------------------------------------------------
+# (a) Regression test: error message must NOT contain the resolved symlink
+#     target path.
+#
+# Approach (symlink-free): two tasks declare the same real path via different
+# spellings — task-a uses "sub/../file.txt" and task-b uses "file.txt".
+# Under the CURRENT implementation _normalize_write_path calls Path.resolve(),
+# so the error message contains the fully-resolved absolute path
+# (e.g. "C:/Users/.../file.txt") and NOT the user-declared "sub/../file.txt".
+# The new implementation must show declared paths only.
+#
+# RED: current implementation shows resolved path in the error message.
+# ---------------------------------------------------------------------------
+
+
+def test_エラーメッセージにsymlink展開パスが含まれない(tmp_path):
+    """Conflict error message must NOT contain the resolved (symlink-expanded) path.
+
+    Two tasks pointing to the same real file via different spellings trigger a
+    conflict.  The error message must list only the user-declared paths
+    (e.g. 'sub/../file.txt' and 'file.txt'), NOT the fully-resolved path
+    (e.g. '/tmp/.../file.txt' or 'C:/Users/.../file.txt').
+
+    RED: current _normalize_write_path calls Path.resolve(), so the resolved
+    absolute path appears in the error message.
+    """
+    import yaml
+
+    sub = tmp_path / "sub"
+    sub.mkdir()
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "task-a",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "writes": ["sub/../file.txt"],
+            },
+            {
+                "id": "task-b",
+                "agent": "security-reviewer",
+                "read_only": True,
+                "writes": ["file.txt"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(manifest_path)
+
+    msg = str(exc_info.value)
+    # The resolved absolute path must NOT appear in the error message.
+    resolved_path = (tmp_path / "file.txt").resolve().as_posix()
+    assert resolved_path not in msg, (
+        f"Error message must not contain resolved path '{resolved_path}', "
+        f"but got: {msg!r}"
+    )
+    # Both task IDs must still appear.
+    assert "task-a" in msg
+    assert "task-b" in msg
+
+
+# ---------------------------------------------------------------------------
+# (b) task.writes must hold the user-declared (pre-symlink-expansion) path.
+#
+# Requires a real symlink; skipped on Windows without privilege.
+#
+# RED: current _normalize_write_path calls Path.resolve() which follows
+# symlinks, so task.writes[0] ends up as the resolved target, not the
+# declared symlink path.
+# ---------------------------------------------------------------------------
+
+
+def test_task_writesにsymlink展開前の宣言パスが格納される(tmp_path):
+    """task.writes[0] must hold the declared symlink path, not the resolved target.
+
+    Creates a real file and a symlink pointing to it.  The manifest declares
+    the symlink path in 'writes'.  After load_manifest the stored path must
+    be the symlink (declared) path, not the resolved target path.
+
+    RED: current implementation calls Path.resolve() so the stored value is
+    the resolved target, failing this assertion.
+    Skipped on Windows / environments without symlink privilege.
+    """
+    import os
+    import yaml
+
+    real_file = tmp_path / "real_file.txt"
+    real_file.write_text("content")
+    symlink_path = tmp_path / "symlink_to_file.txt"
+    _symlink_or_skip(real_file, symlink_path)
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "writer",
+                "agent": "developer",
+                "read_only": False,
+                "writes": ["symlink_to_file.txt"],
+            }
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    result = load_manifest(manifest_path)
+    task = result.tasks[0]
+    assert len(task.writes) == 1
+    # The stored path must be the declared (symlink) path, not the resolved real path.
+    declared_posix = (tmp_path / "symlink_to_file.txt").as_posix()
+    resolved_posix = real_file.resolve().as_posix()
+    assert task.writes[0] == declared_posix, (
+        f"Expected declared path '{declared_posix}', got '{task.writes[0]}'. "
+        f"If this is the resolved path '{resolved_posix}', "
+        f"the fix from T2 has not been applied yet (RED phase)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# (c) Two tasks pointing to the same real file via a symlink must still be
+#     detected as conflicting.
+#
+# Requires a real symlink; skipped on Windows without privilege.
+#
+# This may already pass with the current implementation (both task-1 and
+# task-2 would resolve to the same path), but the test ensures the new
+# implementation also detects the conflict.
+# ---------------------------------------------------------------------------
+
+
+def test_symlink経由で同一実体への衝突が検出される(tmp_path):
+    """task-1 writes symlink and task-2 writes real_file must conflict.
+
+    Creates real_file.txt and a symlink pointing to it.  task-1 declares
+    the symlink, task-2 declares the real file.  They ultimately point to
+    the same inode; load_manifest must raise ManifestError.
+
+    May already be GREEN with current resolve()-based implementation, but
+    ensures the new implementation maintains this behavior.
+    Skipped on Windows / environments without symlink privilege.
+    """
+    import yaml
+
+    real_file = tmp_path / "real_file.txt"
+    real_file.write_text("content")
+    symlink_path = tmp_path / "symlink_to_file.txt"
+    _symlink_or_skip(real_file, symlink_path)
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "task-1",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "writes": ["symlink_to_file.txt"],
+            },
+            {
+                "id": "task-2",
+                "agent": "security-reviewer",
+                "read_only": True,
+                "writes": ["real_file.txt"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError):
+        load_manifest(manifest_path)
+
+
+# ---------------------------------------------------------------------------
+# (d) Same-task intra-writes with symlink and real file pointing to the same
+#     entity must NOT raise ManifestError (current spec: intra-task duplicates
+#     are allowed).
+#
+# Requires a real symlink; skipped on Windows without privilege.
+# ---------------------------------------------------------------------------
+
+
+def test_同一タスク内のwrites重複は許容される_symlink込み(tmp_path):
+    """Single task declaring both symlink and real_file (same entity) must not error.
+
+    Verifies that the existing intra-task-duplicate-allowed behavior is
+    maintained in the new implementation.
+    Skipped on Windows / environments without symlink privilege.
+    """
+    import yaml
+
+    real_file = tmp_path / "real_file.txt"
+    real_file.write_text("content")
+    symlink_path = tmp_path / "symlink_to_file.txt"
+    _symlink_or_skip(real_file, symlink_path)
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "single-task",
+                "agent": "developer",
+                "read_only": False,
+                "writes": ["symlink_to_file.txt", "real_file.txt"],
+            }
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    # Must NOT raise — intra-task duplicates (even via symlink) are allowed.
+    result = load_manifest(manifest_path)
+    assert len(result.tasks) == 1
+
+
+# ---------------------------------------------------------------------------
+# (e) Symlink loop (a.lnk -> b.lnk -> a.lnk) must raise ManifestError,
+#     not OSError leaking to the caller.
+#
+# Requires real symlinks; skipped on Windows without privilege.
+#
+# RED: current _normalize_write_path calls Path.resolve() which raises
+# OSError on a symlink loop but does NOT wrap it in ManifestError.
+# The new implementation must catch OSError and re-raise as ManifestError.
+# ---------------------------------------------------------------------------
+
+
+def test_symlinkループ時にManifestErrorが送出される(tmp_path):
+    """Circular symlink in writes path must raise ManifestError, not OSError.
+
+    Creates a -> b -> a circular symlink and declares 'a.lnk' in two tasks'
+    writes.  load_manifest must raise ManifestError (not OSError) so that
+    the error is handled uniformly by callers.
+
+    RED: current _normalize_write_path calls Path.resolve() which raises
+    OSError (RuntimeError on some platforms) for symlink loops; this OSError
+    is NOT caught and leaks to the caller.
+    Skipped on Windows / environments without symlink privilege.
+    """
+    import os
+    import yaml
+
+    a_lnk = tmp_path / "a.lnk"
+    b_lnk = tmp_path / "b.lnk"
+    try:
+        os.symlink(b_lnk, a_lnk)
+        os.symlink(a_lnk, b_lnk)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not supported on this platform/configuration")
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "task-1",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "writes": ["a.lnk"],
+            },
+            {
+                "id": "task-2",
+                "agent": "security-reviewer",
+                "read_only": True,
+                "writes": ["a.lnk"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    # Must raise ManifestError (not OSError / RuntimeError).
+    with pytest.raises(ManifestError):
+        load_manifest(manifest_path)
+
+
+# ---------------------------------------------------------------------------
+# (f) New multi-line error message format: conflict error must enumerate
+#     declared paths per task in multi-line format.
+#
+# Architecture-report specifies the new format:
+#   Write-path conflict(s) detected:
+#     tasks declaring the same write target:
+#       * task-a: 'declared_path_a'
+#       * task-b: 'declared_path_b'
+#
+# Current format (old):
+#   Write-path conflict(s) detected in manifest:
+#     - 'resolved_path' declared by tasks: task-a, task-b
+#
+# RED: current implementation produces the old single-line format.
+# ---------------------------------------------------------------------------
+
+
+def test_衝突エラーメッセージが多行フォーマットで宣言パスを列挙する(tmp_path):
+    """Conflict error message must use the new multi-line declared-path format.
+
+    The new format (per architecture-report) lists each task and its declared
+    path on separate lines, e.g.:
+        tasks declaring the same write target:
+          * task-a: 'sub/../file.txt'
+          * task-b: 'file.txt'
+
+    RED: current implementation produces the old single-line format
+    ('path' declared by tasks: t1, t2) which does NOT contain
+    'tasks declaring the same write target:'.
+    """
+    import yaml
+
+    sub = tmp_path / "sub"
+    sub.mkdir()
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "task-a",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "writes": ["output.txt"],
+            },
+            {
+                "id": "task-b",
+                "agent": "security-reviewer",
+                "read_only": True,
+                "writes": ["output.txt"],
+            },
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError) as exc_info:
+        load_manifest(manifest_path)
+
+    msg = str(exc_info.value)
+    # New format must contain the multi-line header keyword.
+    assert "tasks declaring the same write target" in msg, (
+        f"Expected new multi-line format with 'tasks declaring the same write target', "
+        f"but got: {msg!r}"
+    )
+    # Each task's declared path must appear as a separate bullet line.
+    assert "* task-a:" in msg or "* task-a" in msg, (
+        f"Expected bullet entry for task-a in message, got: {msg!r}"
+    )
+    assert "* task-b:" in msg or "* task-b" in msg, (
+        f"Expected bullet entry for task-b in message, got: {msg!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (h) Windows-compatible path normalization: task.writes must always use
+#     POSIX-style forward slashes regardless of platform.
+#
+# This test mocks Path.cwd() to simulate a Windows-style working directory
+# and verifies that task.writes[0] uses '/' separators (no backslashes).
+#
+# Note: the current implementation uses Path.resolve().as_posix() which
+# already produces POSIX strings on all platforms.  The new implementation
+# uses Path.absolute() + os.path.normpath + PurePosixPath.as_posix() which
+# must also produce POSIX strings.  This test may already be GREEN.
+# ---------------------------------------------------------------------------
+
+
+def test_Windows的パスでもPOSIX文字列で正規化される(tmp_path):
+    """task.writes[0] must be a forward-slash POSIX string on all platforms.
+
+    Uses tmp_path (which is valid on the current platform) and asserts that
+    the stored path contains no backslashes and uses '/' as separator.
+
+    This test may already be GREEN with the current resolve().as_posix()
+    implementation, but ensures the new absolute()+normpath+as_posix()
+    implementation also satisfies the requirement.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "writer",
+                "agent": "developer",
+                "read_only": False,
+                "writes": ["output.txt"],
+            }
+        ],
+    }
+    manifest_path = tmp_path / "plan.md"
+    manifest_path.write_text(f"---\n{yaml.dump(front)}---\n", encoding="utf-8")
+
+    result = load_manifest(manifest_path)
+    task = result.tasks[0]
+    assert len(task.writes) == 1
+    stored_path = task.writes[0]
+    # Must not contain Windows-style backslashes.
+    assert "\\" not in stored_path, (
+        f"Path must use POSIX forward slashes, but got: {stored_path!r}"
+    )
+    # Must end with the declared filename.
+    assert stored_path.endswith("/output.txt"), (
+        f"Path must end with '/output.txt', but got: {stored_path!r}"
+    )

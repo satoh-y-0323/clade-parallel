@@ -6,6 +6,7 @@ A manifest file is a Markdown file with a YAML frontmatter block delimited by
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,11 +67,14 @@ class Task:
         timeout_sec: Maximum execution time in seconds.
         cwd: Working directory for the agent process.
         env: Additional environment variables for the agent process.
-        writes: Tuple of absolute, normalized filesystem paths (as strings)
-            that this task declares it will write. Empty tuple if omitted.
-            Used by load_manifest() to detect static write-conflicts between
-            tasks before execution. This field is optional and defaults to
-            an empty tuple for backward compatibility with v0.1 manifests.
+        writes: Tuple of absolute, user-declared filesystem paths (as POSIX
+            strings) that this task declares it will write. Paths are
+            normalized against the task's cwd and have ``..`` segments resolved,
+            but symbolic links are **not** followed. Empty tuple if omitted.
+            Used by load_manifest() for static conflict detection.
+            NOTE: These are *declared* paths, not resolved paths. Do NOT
+            follow symlinks on these values when logging or outputting error
+            messages — doing so would leak internal filesystem structure.
         depends_on: Tuple of task IDs that must complete before this task
             starts. Duplicates are removed while preserving insertion order.
             Empty tuple if omitted. load_manifest() validates that all
@@ -111,12 +115,13 @@ class Manifest:
 
 
 def _normalize_write_path(raw: object, task_id: str, cwd: Path) -> str:
-    """Normalize a single raw 'writes' path entry to an absolute POSIX string.
+    """Normalize a single 'writes' entry to an absolute POSIX string.
 
-    The raw value must be a non-empty string. Relative paths are resolved
-    against the task's working directory. Symbolic links and ``..`` segments
-    are resolved via ``Path.resolve()``. The result is returned as a POSIX
-    string (forward slashes) for cross-platform stable comparison.
+    Relative paths are resolved against the task's working directory.
+    ``..`` segments are collapsed via string normalization. Symbolic links
+    are intentionally **not** resolved; the resulting path preserves the
+    user's declared form so that downstream error messages do not leak
+    symlink target paths.
 
     Args:
         raw: The raw element from the YAML list (expected to be a string).
@@ -124,7 +129,7 @@ def _normalize_write_path(raw: object, task_id: str, cwd: Path) -> str:
         cwd: The task's resolved working directory (absolute path).
 
     Returns:
-        An absolute, resolved path string in POSIX form.
+        Absolute, ``..``-free path string in POSIX form (symlinks intact).
 
     Raises:
         ManifestError: If ``raw`` is not a non-empty string.
@@ -141,7 +146,10 @@ def _normalize_write_path(raw: object, task_id: str, cwd: Path) -> str:
     p = Path(raw)
     if not p.is_absolute():
         p = cwd / p
-    return p.resolve().as_posix()
+    # Normalize ".." segments without following symlinks.
+    # os.path.normpath collapses ".." at string level; as_posix() ensures
+    # forward slashes regardless of platform.
+    return Path(os.path.normpath(p)).as_posix()
 
 
 def _extract_frontmatter(text: str) -> str:
@@ -378,9 +386,10 @@ def _check_cyclic_dependencies(tasks: tuple[Task, ...]) -> None:
 def _check_writes_conflicts(tasks: tuple[Task, ...]) -> None:
     """Detect static write-conflicts across tasks.
 
-    A conflict occurs when two or more tasks declare the same normalized
-    absolute path in their ``writes`` field. Paths are compared as strings
-    after normalization by ``_normalize_write_path``.
+    Two tasks conflict when their declared ``writes`` paths resolve to the
+    same filesystem target (symlinks are followed for comparison only).
+    Error messages display the paths *as declared by the user* — symlink
+    targets are never exposed in output.
 
     Args:
         tasks: All parsed tasks from the manifest, in manifest order.
@@ -390,23 +399,39 @@ def _check_writes_conflicts(tasks: tuple[Task, ...]) -> None:
             message lists every conflicting path along with the task IDs
             that declared it, sorted deterministically.
     """
-    # Map: normalized_path -> list of task IDs (in manifest order).
-    # Use a set per task to avoid counting intra-task duplicates as conflicts
-    # (same-task duplicate writes are allowed per spec).
-    claims: dict[str, list[str]] = {}
+    # Map: resolved_key (POSIX str) -> list of (task_id, declared_path).
+    # resolved_key follows symlinks for accurate conflict detection;
+    # declared_path is what the user wrote and is used in error messages only.
+    claims: dict[str, list[tuple[str, str]]] = {}
     for task in tasks:
-        for path in set(task.writes):
-            claims.setdefault(path, []).append(task.id)
+        seen_keys: set[str] = set()
+        for declared in task.writes:
+            try:
+                key = Path(declared).resolve(strict=False).as_posix()
+            except OSError as e:
+                raise ManifestError(
+                    f"Task '{task.id}': symlink loop detected in writes path"
+                    f" '{declared}': {e}"
+                ) from e
+            if key in seen_keys:
+                continue  # intra-task duplicate — ignored per spec
+            seen_keys.add(key)
+            claims.setdefault(key, []).append((task.id, declared))
 
-    conflicts = {path: ids for path, ids in claims.items() if len(ids) >= 2}  # 2+ tasks claim the same path
+    conflicts = {
+        k: v for k, v in claims.items() if len(v) >= 2
+    }  # 2+ tasks claim the same target
     if not conflicts:
         return
 
-    # Build a deterministic, human-readable message.
     lines = ["Write-path conflict(s) detected in manifest:"]
-    for path in sorted(conflicts):
-        ids = ", ".join(conflicts[path])
-        lines.append(f"  - '{path}' declared by tasks: {ids}")
+    for key in sorted(conflicts):
+        entries = sorted(
+            conflicts[key]
+        )  # deterministic: sort by (task_id, declared_path)
+        lines.append("  - tasks declaring the same write target:")
+        for task_id, declared in entries:
+            lines.append(f"    * {task_id}: '{declared}'")
     raise ManifestError("\n".join(lines))
 
 
