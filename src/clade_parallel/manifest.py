@@ -92,6 +92,11 @@ class Task:
     timeout_sec: int
     cwd: Path
     env: dict[str, str]
+    # NOTE: Store only the user-declared path (normalized with os.path.normpath to
+    # collapse '..' segments). Never store Path.resolve() results here — doing so
+    # would expose symlink target paths in error messages and log output, which is
+    # a symlink-target leak (see ADR-011). Path.resolve() is used *only* inside
+    # _check_writes_conflicts() as a local comparison key, never persisted.
     writes: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
     idle_timeout_sec: int | None = None
