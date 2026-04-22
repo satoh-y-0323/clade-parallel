@@ -398,7 +398,7 @@ def _check_writes_conflicts(tasks: tuple[Task, ...]) -> None:
         for path in set(task.writes):
             claims.setdefault(path, []).append(task.id)
 
-    conflicts = {path: ids for path, ids in claims.items() if len(ids) >= 2}
+    conflicts = {path: ids for path, ids in claims.items() if len(ids) >= 2}  # 2+ tasks claim the same path
     if not conflicts:
         return
 

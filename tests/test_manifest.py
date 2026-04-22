@@ -403,6 +403,7 @@ tasks: []
     "version,should_pass",
     [
         ("0.1", True),  # only supported version
+        ("0.2", True),  # supported_0.2
         ("0.0", False),
         ("1.0", False),
         ("", False),
@@ -412,6 +413,7 @@ tasks: []
     ],
     ids=[
         "supported_0.1",
+        "supported_0.2",
         "unsupported_0.0",
         "unsupported_1.0",
         "empty",
@@ -421,7 +423,7 @@ tasks: []
     ],
 )
 def test_clade_plan_versionの境界値(version, should_pass, manifest_file):
-    """Boundary values for clade_plan_version: only '0.1' is accepted."""
+    """Boundary values for clade_plan_version: '0.1' and '0.2' are accepted."""
     content = f"""\
 ---
 clade_plan_version: "{version}"
@@ -447,9 +449,10 @@ tasks:
 
 
 def test_SUPPORTED_PLAN_VERSIONSが正しく定義されている():
-    """SUPPORTED_PLAN_VERSIONS is a frozenset containing exactly '0.1'."""
+    """SUPPORTED_PLAN_VERSIONS is a frozenset containing '0.1' and '0.2'."""
     assert isinstance(SUPPORTED_PLAN_VERSIONS, frozenset)
     assert "0.1" in SUPPORTED_PLAN_VERSIONS
+    assert "0.2" in SUPPORTED_PLAN_VERSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -594,7 +597,7 @@ tasks:
     assert result.tasks[0].writes == ()
 
 
-def test_writes単一要素がパースされる(manifest_file, tmp_path):
+def test_writes単一要素がパースされる(manifest_file):
     """writes: ["a.txt"] — task.writes contains the normalized absolute path."""
     content = """\
 ---
@@ -612,12 +615,8 @@ tasks:
     result = load_manifest(path)
     task = result.tasks[0]
     assert len(task.writes) == 1
-    # The path should be an absolute POSIX string
-    assert (
-        task.writes[0].endswith("/a.txt")
-        or task.writes[0].endswith("\\a.txt")
-        or "a.txt" in task.writes[0]
-    )
+    expected = (path.parent / "a.txt").resolve().as_posix()
+    assert task.writes[0] == expected
 
 
 def test_writes相対パスがcwdを基準に絶対化される(tmp_path):

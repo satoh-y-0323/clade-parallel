@@ -106,7 +106,7 @@ Tasks with no dependencies (or with all dependencies satisfied) run in parallel.
 
 ```markdown
 ---
-clade_plan_version: "0.1"
+clade_plan_version: "0.2"
 name: "sequential-example"
 tasks:
   - id: fetch
@@ -145,7 +145,7 @@ Cleanup failures are silently ignored to avoid masking the actual task result.
 
 ```markdown
 ---
-clade_plan_version: "0.1"
+clade_plan_version: "0.2"
 name: "write-example"
 tasks:
   - id: writer
@@ -198,6 +198,8 @@ clade-parallel --help
   outside the repository root before running clade-parallel. Write tasks
   (`read_only: false`) run in an isolated worktree and are less affected
   by this issue.
+
+- **`writes:` の静的チェックはシンボリックリンクの実行時差し替えを保護しない**: `writes:` による衝突検出はマニフェストのパース時点でパスを解決して比較します。エージェントが実行時にシンボリックリンクを新たに作成・差し替えた場合、静的チェックでは検知できません。
 
 - **`env` block-list**: The following keys are silently rejected from `task.env` for
   security reasons: `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`,
