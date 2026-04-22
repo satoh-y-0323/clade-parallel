@@ -523,12 +523,21 @@ def _run_with_progress(
     proc: subprocess.Popen[str],
     task: Task,
     start: float,
+    effective_idle_timeout: int | None,
 ) -> tuple[str, str, bool, Literal["total", "idle"] | None]:
     """Run *proc* to completion with progress reporting and dual timeout.
 
     Reads stdout/stderr line-by-line in daemon threads so both streams are
     drained concurrently without deadlock.  A watchdog thread fires every
     ``_PROGRESS_INTERVAL_SEC`` seconds to print status and enforce timeouts.
+
+    Args:
+        proc: The subprocess to monitor.
+        task: The task configuration (used for timeout_sec and task.id).
+        start: The perf_counter timestamp when the process was started.
+        effective_idle_timeout: Idle timeout in seconds, or None to disable.
+            Callers set this to None for read_only tasks to avoid false
+            timeouts during the silent synthesis phase.
 
     Returns:
         (stdout, stderr, timed_out, timeout_reason)
@@ -564,8 +573,8 @@ def _run_with_progress(
                 last_ts = last_output_ts[0]
             total_remaining = task.timeout_sec - (now - start)
             idle_remaining = (
-                task.idle_timeout_sec - (now - last_ts)
-                if task.idle_timeout_sec is not None
+                effective_idle_timeout - (now - last_ts)
+                if effective_idle_timeout is not None
                 else float("inf")
             )
             sleep_sec = min(
@@ -590,7 +599,7 @@ def _run_with_progress(
                     flush=True,
                 )
 
-            if task.idle_timeout_sec is not None and idle >= task.idle_timeout_sec:
+            if effective_idle_timeout is not None and idle >= effective_idle_timeout:
                 kill_reason.append("idle")
                 proc.kill()
                 return
@@ -643,6 +652,12 @@ def _execute_task(
     cmd = [claude_exe, _CLAUDE_PROMPT_FLAG, task.prompt]
     env = {**os.environ, **task.env}
 
+    # read_only tasks enter a silent synthesis phase after reading files, so
+    # idle_timeout_sec would trigger a false timeout. Force it to None here.
+    effective_idle_timeout: int | None = (
+        None if task.read_only else task.idle_timeout_sec
+    )
+
     # Determine the effective working directory.
     branch_name: str | None = None
     if not task.read_only:
@@ -674,7 +689,7 @@ def _execute_task(
 
         try:
             stdout, stderr, timed_out, timeout_reason = _run_with_progress(
-                proc, task, start
+                proc, task, start, effective_idle_timeout
             )
             returncode: int | None = proc.returncode if not timed_out else None
         except Exception:

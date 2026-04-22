@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -290,6 +291,16 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
         if idle_timeout_raw is not None
         else None
     )
+
+    # Warn when idle_timeout_sec is set on a read_only task: the agent enters
+    # a silent synthesis phase after reading files, which would trigger a false
+    # idle timeout. The runner ignores idle_timeout_sec for read_only tasks.
+    if read_only and idle_timeout_sec is not None:
+        print(
+            f"Warning: task '{task_id}':"
+            " idle_timeout_sec is ignored for read_only tasks.",
+            file=sys.stderr,
+        )
 
     # Validate env keys against the blocklist before constructing the dict.
     raw_env: dict[str, str] = raw.get("env", {}) or {}
