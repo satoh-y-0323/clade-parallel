@@ -1419,3 +1419,164 @@ tasks:
 
     with pytest.raises(RunnerError, match="simulated worktree setup failure"):
         execute_task(task, "claude", git_root=git_repo)
+
+
+# ---------------------------------------------------------------------------
+# T8: idle タイムアウト経路の検証テスト
+# ---------------------------------------------------------------------------
+
+
+class _IdleBlockingFakePopen(FakePopen):
+    """FakePopen whose stdout is initially empty and wait() blocks until kill().
+
+    Used to simulate a process that produces no output, triggering the idle
+    watchdog.
+    """
+
+    def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+        super().__init__(cmd, **kwargs)
+        self._killed_event = threading.Event()
+        self.stdout = io.StringIO("")
+        self.stderr = io.StringIO("")
+
+    def wait(self) -> int | None:
+        self._killed_event.wait()
+        return self.returncode
+
+    def kill(self) -> None:
+        self.returncode = -9  # mirror real process kill() behaviour
+        super().kill()
+        self._killed_event.set()
+
+
+def test_idle_タイムアウト経路でtimeout_reason_idleになる(monkeypatch, tmp_path):
+    """idle_timeout_sec triggers a kill and sets TaskResult.timeout_reason=='idle'.
+
+    Arrange: idle_timeout_sec=1, timeout_sec=60 (total will not fire).
+    The FakePopen produces no stdout, so the idle watchdog fires first.
+    _PROGRESS_INTERVAL_SEC is patched to 0.05 for test speed.
+    """
+    import clade_parallel.runner as runner_module
+
+    monkeypatch.setattr(runner_module, "_PROGRESS_INTERVAL_SEC", 0.05)
+    monkeypatch.setattr(runner_module.subprocess, "Popen", _IdleBlockingFakePopen)
+
+    idle_manifest = """\
+---
+clade_plan_version: "0.1"
+name: idle-timeout-test
+tasks:
+  - id: slow-task
+    agent: code-reviewer
+    read_only: true
+    idle_timeout_sec: 1
+    timeout_sec: 60
+---
+"""
+    manifest = _make_manifest(tmp_path, idle_manifest)
+    result = run_manifest(manifest)
+
+    assert len(result.results) == 1
+    tr = result.results[0]
+    assert tr.timed_out is True, f"Expected timed_out=True, got {tr.timed_out}"
+    assert tr.timeout_reason == "idle", (
+        f"Expected timeout_reason='idle', got {tr.timeout_reason!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T9: total タイムアウト経路の timeout_reason 値検証テスト
+# ---------------------------------------------------------------------------
+
+
+def test_total_タイムアウト経路でtimeout_reason_totalになる(monkeypatch, tmp_path):
+    """Total timeout triggers a kill and sets TaskResult.timeout_reason=='total'.
+
+    Arrange: idle_timeout_sec is not set, timeout_sec=1 (short), FakePopen
+    blocks until killed.  _PROGRESS_INTERVAL_SEC patched to 0.05 for speed.
+    """
+    import clade_parallel.runner as runner_module
+
+    monkeypatch.setattr(runner_module, "_PROGRESS_INTERVAL_SEC", 0.05)
+    monkeypatch.setattr(runner_module.subprocess, "Popen", _IdleBlockingFakePopen)
+
+    total_manifest = """\
+---
+clade_plan_version: "0.1"
+name: total-timeout-test
+tasks:
+  - id: blocking-task
+    agent: code-reviewer
+    read_only: true
+    timeout_sec: 1
+---
+"""
+    manifest = _make_manifest(tmp_path, total_manifest)
+    result = run_manifest(manifest)
+
+    assert len(result.results) == 1
+    tr = result.results[0]
+    assert tr.timed_out is True, f"Expected timed_out=True, got {tr.timed_out}"
+    assert tr.timeout_reason == "total", (
+        f"Expected timeout_reason='total', got {tr.timeout_reason!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T10: 進捗表示フォーマットテスト
+# ---------------------------------------------------------------------------
+
+
+def test_進捗表示running_フォーマットがstderrに出力される(monkeypatch, tmp_path, capfd):
+    """Watchdog outputs '[task_id] running...' to stderr within the first interval.
+
+    _PROGRESS_INTERVAL_SEC is patched to 0.05 so the watchdog fires quickly.
+    A blocking FakePopen is used so the process stays alive long enough for
+    at least one watchdog tick to emit a progress line.
+    """
+    import clade_parallel.runner as runner_module
+
+    monkeypatch.setattr(runner_module, "_PROGRESS_INTERVAL_SEC", 0.05)
+
+    # Use a FakePopen that produces output quickly then terminates.
+    # We need the watchdog to fire at least once before the process ends.
+    # A short sleep in wait() gives time for the watchdog tick.
+    class _SlowExitFakePopen(FakePopen):
+        """FakePopen that sleeps briefly in wait() to allow watchdog to fire."""
+
+        def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+            super().__init__(cmd, **kwargs)
+            self.returncode = 0
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int | None:
+            time.sleep(0.15)  # Allow 2-3 watchdog ticks at 0.05s interval
+            return self.returncode
+
+    monkeypatch.setattr(runner_module.subprocess, "Popen", _SlowExitFakePopen)
+
+    single_manifest = """\
+---
+clade_plan_version: "0.1"
+name: progress-test
+tasks:
+  - id: watch-task
+    agent: code-reviewer
+    read_only: true
+    timeout_sec: 60
+---
+"""
+    manifest = _make_manifest(tmp_path, single_manifest)
+    run_manifest(manifest)
+
+    captured = capfd.readouterr()
+    stderr_output = captured.err
+    # At least one progress line should contain the task id and 'running...'
+    # or 'thinking...' pattern
+    assert "[watch-task]" in stderr_output, (
+        f"Expected '[watch-task]' in stderr, got: {stderr_output!r}"
+    )
+    assert "running..." in stderr_output or "thinking..." in stderr_output, (
+        f"Expected 'running...' or 'thinking...' in stderr, got: {stderr_output!r}"
+    )
