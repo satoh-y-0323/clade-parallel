@@ -75,6 +75,8 @@ class Task:
             NOTE: These are *declared* paths, not resolved paths. Do NOT
             follow symlinks on these values when logging or outputting error
             messages — doing so would leak internal filesystem structure.
+            In particular, never call Path(w).resolve() on these values in
+            logging, debugging, or telemetry code; use the declared string as-is.
         depends_on: Tuple of task IDs that must complete before this task
             starts. Duplicates are removed while preserving insertion order.
             Empty tuple if omitted. load_manifest() validates that all
@@ -410,8 +412,7 @@ def _check_writes_conflicts(tasks: tuple[Task, ...]) -> None:
                 key = Path(declared).resolve(strict=False).as_posix()
             except OSError as e:
                 raise ManifestError(
-                    f"Task '{task.id}': symlink loop detected in writes path"
-                    f" '{declared}': {e}"
+                    f"Task '{task.id}': symlink loop detected in writes path '{declared}'."
                 ) from e
             if key in seen_keys:
                 continue  # intra-task duplicate — ignored per spec

@@ -1636,6 +1636,7 @@ def test_エラーメッセージにsymlink展開パスが含まれない(tmp_pa
     N6 修正（ADR-011）により宣言パス多行列挙フォーマットに変更された。
     """
     import os
+
     import yaml
 
     sub = tmp_path / "sub"
@@ -1709,6 +1710,7 @@ def test_task_writesにsymlink展開前の宣言パスが格納される(tmp_pat
     Skipped on Windows / environments without symlink privilege.
     """
     import os
+
     import yaml
 
     real_file = tmp_path / "real_file.txt"
@@ -1867,6 +1869,7 @@ def test_symlinkループ時にManifestErrorが送出される(tmp_path):
     Skipped on Windows / environments without symlink privilege.
     """
     import os
+
     import yaml
 
     a_lnk = tmp_path / "a.lnk"
