@@ -34,6 +34,7 @@ _WORKTREE_ROOT_NAME = ".clade-worktrees"
 _GIT_COMMAND_TIMEOUT_SEC = 30
 _CONFLICT_STDERR_MAX_CHARS = 2000
 _PROGRESS_INTERVAL_SEC = 5
+_STARTUP_DISPLAY_SEC = 60
 _LAST_LINES_ON_TIMEOUT = 20
 
 # ---------------------------------------------------------------------------
@@ -548,12 +549,19 @@ def _run_with_progress(
     last_output_lock = threading.Lock()
     done_event = threading.Event()
     kill_reason: list[str] = []
+    # Track whether any output has been received yet. During the startup phase
+    # (worktree creation + claude launch takes 60-120s silently), the idle-time
+    # "thinking..." message misleads users into thinking the agent is active.
+    # We show "starting up..." until the first output arrives or the startup
+    # grace period expires.
+    has_received_output: list[bool] = [False]
 
     def _reader(stream: IO[str], buf: list[str]) -> None:
         for line in stream:
             buf.append(line)
             with last_output_lock:
                 last_output_ts[0] = time.perf_counter()
+                has_received_output[0] = True
 
     stdout_thread = threading.Thread(
         target=_reader, args=(proc.stdout, lines_stdout), daemon=True
@@ -587,10 +595,17 @@ def _run_with_progress(
             now = time.perf_counter()
             with last_output_lock:
                 last_ts = last_output_ts[0]
+                received = has_received_output[0]
             idle = now - last_ts
             total = now - start
 
-            if idle < _PROGRESS_INTERVAL_SEC:
+            if not received and total < _STARTUP_DISPLAY_SEC:
+                print(
+                    f"[{task.id}] starting up... {total:.0f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            elif idle < _PROGRESS_INTERVAL_SEC:
                 print(f"[{task.id}] running...", file=sys.stderr, flush=True)
             else:
                 print(

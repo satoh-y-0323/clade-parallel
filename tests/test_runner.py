@@ -1586,11 +1586,67 @@ tasks:
 
     captured = capfd.readouterr()
     stderr_output = captured.err
-    # At least one progress line should contain the task id and 'running...'
-    # or 'thinking...' pattern
+    # At least one progress line should contain the task id and one of:
+    # 'starting up...' (no output yet, within startup grace period),
+    # 'running...' (recent output), or 'thinking...' (idle after output).
     assert (
         "[watch-task]" in stderr_output
     ), f"Expected '[watch-task]' in stderr, got: {stderr_output!r}"
     assert (
-        "running..." in stderr_output or "thinking..." in stderr_output
-    ), f"Expected 'running...' or 'thinking...' in stderr, got: {stderr_output!r}"
+        "starting up..." in stderr_output
+        or "running..." in stderr_output
+        or "thinking..." in stderr_output
+    ), (
+        f"Expected 'starting up...', 'running...', or 'thinking...' in "
+        f"stderr, got: {stderr_output!r}"
+    )
+
+
+def test_進捗表示_初回出力前は_starting_up_を表示する(monkeypatch, tmp_path, capfd):
+    """Watchdog outputs '[task_id] starting up... Xs' before any output arrives.
+
+    During the startup phase (worktree creation + claude launch takes 60-120s
+    silently), showing 'thinking...' misleads users. The new behavior shows
+    'starting up... Xs' until the first output line arrives or _STARTUP_DISPLAY_SEC
+    elapses.
+    """
+    import clade_parallel.runner as runner_module
+
+    monkeypatch.setattr(runner_module, "_PROGRESS_INTERVAL_SEC", 0.05)
+
+    class _NoOutputFakePopen(FakePopen):
+        """FakePopen that produces no output and stays alive briefly."""
+
+        def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+            super().__init__(cmd, **kwargs)
+            self.returncode = 0
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int | None:
+            time.sleep(0.15)  # Allow 2-3 watchdog ticks at 0.05s interval
+            return self.returncode
+
+    monkeypatch.setattr(runner_module.subprocess, "Popen", _NoOutputFakePopen)
+
+    single_manifest = """\
+---
+clade_plan_version: "0.1"
+name: startup-test
+tasks:
+  - id: startup-task
+    agent: code-reviewer
+    read_only: true
+    timeout_sec: 60
+---
+"""
+    manifest = _make_manifest(tmp_path, single_manifest)
+    run_manifest(manifest)
+
+    captured = capfd.readouterr()
+    stderr_output = captured.err
+    # With _STARTUP_DISPLAY_SEC = 60 and total elapsed < 1s in this test,
+    # the watchdog should emit 'starting up...' because no output was received.
+    assert (
+        "[startup-task] starting up..." in stderr_output
+    ), f"Expected 'starting up...' in stderr, got: {stderr_output!r}"
