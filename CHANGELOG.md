@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-04-23
+
+### Added
+- **Startup phase display**: during the fixed 60–120 s startup cost (worktree creation + `claude` launch), clade-parallel now prints `[task-id] starting up... Xs` to stderr instead of `thinking... Xs`, so users do not mistake the silent startup phase for the agent actively processing. The display switches to `running...` / `thinking...` once the first output arrives or after 60 seconds (`_STARTUP_DISPLAY_SEC`).
+- **README `Timeout reference values` section**: small / medium / large scale reference values for `timeout_sec` and `idle_timeout_sec`, along with notes on the fixed startup cost and the production guideline (observed maximum × 1.5).
+
+### Fixed
+- README: `timeout_sec` default was documented as "no limit" but is actually `900`. Corrected the Task fields table.
+- README: `idle_timeout_sec` and `cwd` were missing from the Task fields table. Added them.
+
 ## [0.5.1] - 2026-04-23
 
 ### Added
