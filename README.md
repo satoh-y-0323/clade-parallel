@@ -92,10 +92,36 @@ Any Markdown content below the frontmatter is ignored by clade-parallel.
 | `agent` | Yes | Agent type string passed to `claude -p` |
 | `read_only` | Yes | `true` (read-only) or `false` (write task; runs in an isolated worktree) |
 | `prompt` | No | Prompt string sent to the agent |
-| `timeout_sec` | No | Per-task timeout in seconds (default: no limit) |
+| `timeout_sec` | No | Total task timeout in seconds (default: `900`). See [Timeout reference values](#timeout-reference-values) |
+| `idle_timeout_sec` | No | Idle (silent) timeout in seconds. Ignored for `read_only: true` tasks. See [Timeout reference values](#timeout-reference-values) |
+| `cwd` | No | Working directory for the subprocess (relative to the manifest file). Default: the manifest's directory |
 | `env` | No | Extra environment variables for the subprocess |
 | `writes` | No | List of file paths the task will write (used for static conflict detection) |
 | `depends_on` | No | List of task IDs that must complete before this task starts |
+
+### Timeout reference values
+
+Choosing appropriate `timeout_sec` and `idle_timeout_sec` depends on the scale
+of the task. The table below shows reference values by development scale.
+Values should be adjusted based on actual measurements in your environment.
+
+| Scale | File count / lines | `timeout_sec` (developer) | `idle_timeout_sec` (developer) | `timeout_sec` (reviewer) |
+|---|---|---|---|---|
+| **Small** (default) | ~10 files / hundreds of lines | 900 (15 min) | 600 (10 min) | 900 (15 min) |
+| **Medium** | 10–50 files / thousands of lines | 1800 (30 min) | 900 (15 min) | 1800 (30 min) |
+| **Large** | 50+ files / tens of thousands of lines | 3600 (1 h) | 1200 (20 min) | 9000 (2.5 h) |
+
+**Notes:**
+
+- Defaults (`timeout_sec: 900`, no `idle_timeout_sec`) target small-scale development.
+- A fixed startup cost of 60–120 seconds (worktree creation + `claude` launch) is
+  incurred for each task. Set `idle_timeout_sec` to at least **300 seconds** so this
+  silent startup phase does not trigger a false idle timeout.
+- `idle_timeout_sec` is automatically ignored for `read_only: true` tasks
+  (reviewer agents enter a silent synthesis phase after reading files; see
+  `runner.py` `effective_idle_timeout`).
+- For production use, measure actual task duration once and set
+  `timeout_sec ≈ observed maximum × 1.5` as a safety margin.
 
 ### `depends_on` — task dependencies
 
