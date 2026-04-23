@@ -1624,7 +1624,9 @@ def test_進捗表示_初回出力前は_starting_up_を表示する(monkeypatch
             self.stderr = io.StringIO("")
 
         def wait(self) -> int | None:
-            time.sleep(0.15)  # Allow 2-3 watchdog ticks at 0.05s interval
+            # 0.5s gives the watchdog ample time to fire at 0.05s intervals even
+            # on slower CI runners (macOS arm64 was particularly tight at 0.15s).
+            time.sleep(0.5)
             return self.returncode
 
     monkeypatch.setattr(runner_module.subprocess, "Popen", _NoOutputFakePopen)
@@ -1641,6 +1643,13 @@ tasks:
 ---
 """
     manifest = _make_manifest(tmp_path, single_manifest)
+
+    # Clear any stderr residue from prior tests before running. Prior tests may
+    # have daemon watchdog threads still emitting progress lines at the point
+    # capfd becomes active for this test; readouterr() drains that buffer so
+    # the assertion below checks only output produced by this test.
+    capfd.readouterr()
+
     run_manifest(manifest)
 
     captured = capfd.readouterr()
