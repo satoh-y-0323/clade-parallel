@@ -10,7 +10,7 @@ from .manifest import (
 )
 from .runner import RunnerError, RunResult, TaskResult, run_manifest
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"
 
 __all__ = [
     "CladeParallelError",

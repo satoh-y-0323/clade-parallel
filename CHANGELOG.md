@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-04-23
+
+### Fixed
+- Test suite: `test_進捗表示_初回出力前は_starting_up_を表示する` was flaky on macOS Python 3.11 CI because (a) a prior test's daemon watchdog thread could leak progress lines into `capfd` and (b) 0.15 s sleep in the fake `Popen.wait()` was too tight on arm64 runners for the 0.05 s watchdog interval to fire reliably. Now the test clears `capfd` before running `run_manifest()` and extends the sleep to 0.5 s.
+
+### Note
+- No runtime changes from 0.5.2; this is a test-only fix so that the v0.5.2 feature release has a green CI on the tagged commit.
+
 ## [0.5.2] - 2026-04-23
 
 ### Added
