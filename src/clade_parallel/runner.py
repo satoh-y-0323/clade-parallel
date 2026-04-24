@@ -36,6 +36,7 @@ FailureCategory = Literal["transient", "permanent", "timeout", "none"]
 # ---------------------------------------------------------------------------
 
 _DEFAULT_CLAUDE_EXECUTABLE = "claude"
+_DEFAULT_MAX_WORKERS: int = 3
 _CLAUDE_PROMPT_FLAG = "-p"
 _WORKTREE_ROOT_NAME = ".clade-worktrees"
 _GIT_COMMAND_TIMEOUT_SEC = 30
@@ -1151,8 +1152,8 @@ def run_manifest(
     Args:
         manifest: A Manifest instance, or a Path/str pointing to a manifest
             file to load.
-        max_workers: Maximum number of worker threads. Defaults to the number
-            of tasks in the manifest (fully parallel). Use 1 for serial execution.
+        max_workers: Maximum number of worker threads. Defaults to
+            ``_DEFAULT_MAX_WORKERS`` (3). Use 1 for serial execution.
         claude_executable: Name or path of the claude binary to invoke.
         log_dir: Directory for task stdout/stderr log files. When None and
             log_enabled is True, defaults to ``(git_root or cwd) / ".claude" / "logs"``.
@@ -1170,7 +1171,7 @@ def run_manifest(
         manifest = load_manifest(manifest)
 
     tasks: Sequence[Task] = manifest.tasks
-    workers = max_workers if max_workers is not None else max(1, len(tasks))
+    workers = max_workers if max_workers is not None else _DEFAULT_MAX_WORKERS
 
     # Determine the default working directory for git root resolution.
     default_cwd = Path.cwd()

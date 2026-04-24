@@ -15,6 +15,7 @@ import pytest
 
 from clade_parallel.manifest import Manifest, Task, load_manifest
 from clade_parallel.runner import (
+    _DEFAULT_MAX_WORKERS,  # noqa: PLC2701
     RunnerError,
     RunResult,
     TaskResult,
@@ -324,7 +325,43 @@ def test_並列実行により総時間が直列合計より短くなる(fake_cl
 
 
 # ---------------------------------------------------------------------------
-# Test 8: max_workers=1 forces serial execution (total time ≥ sum of each)
+# Test 8: _DEFAULT_MAX_WORKERS constant and default concurrency cap
+# ---------------------------------------------------------------------------
+
+
+def test_DEFAULT_MAX_WORKERSは3である():
+    """_DEFAULT_MAX_WORKERS must be 3 to avoid saturating the Claude API rate limit."""
+    assert _DEFAULT_MAX_WORKERS == 3
+
+
+def test_max_workers未指定時はDEFAULT_MAX_WORKERSが使われる(
+    fake_claude_runner, tmp_path, monkeypatch
+):
+    """When max_workers is not specified, ThreadPoolExecutor receives _DEFAULT_MAX_WORKERS."""
+    import concurrent.futures
+
+    captured: list[int] = []
+    original_init = concurrent.futures.ThreadPoolExecutor.__init__
+
+    def patched_init(self, max_workers=None, **kwargs):  # type: ignore[override]
+        if max_workers is not None:
+            captured.append(max_workers)
+        original_init(self, max_workers=max_workers, **kwargs)
+
+    monkeypatch.setattr(concurrent.futures.ThreadPoolExecutor, "__init__", patched_init)
+
+    outcomes = [{"returncode": 0}, {"returncode": 0}]
+    fake_claude_runner(outcomes)
+    manifest = _make_manifest(tmp_path, MINIMAL_TWO_TASKS)
+
+    run_manifest(manifest)
+
+    assert captured, "ThreadPoolExecutor was not called with explicit max_workers"
+    assert captured[0] == _DEFAULT_MAX_WORKERS
+
+
+# ---------------------------------------------------------------------------
+# Test 9: max_workers=1 forces serial execution (total time ≥ sum of each)
 # ---------------------------------------------------------------------------
 
 
