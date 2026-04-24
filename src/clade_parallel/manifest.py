@@ -20,7 +20,7 @@ from ._exceptions import CladeParallelError
 # Public constants
 # ---------------------------------------------------------------------------
 
-SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1", "0.2", "0.3"})
+SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1", "0.2", "0.3", "0.4"})
 
 # Regular expression that defines the set of characters allowed in a task ID.
 # Only alphanumeric characters, hyphens, and underscores are permitted.
@@ -84,6 +84,9 @@ class Task:
             referenced IDs exist and that no cyclic dependency is present.
         idle_timeout_sec: If set, the task is killed when no output has been
             produced for this many seconds. None means no idle timeout.
+        max_retries: Maximum number of additional attempts after the first try.
+            0 means no retries (default). Transient failures are retried up to
+            this count; permanent failures and timeouts are NOT retried. Must be >= 0.
     """
 
     id: str
@@ -101,6 +104,7 @@ class Task:
     writes: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
     idle_timeout_sec: int | None = None
+    max_retries: int = 0
 
 
 @dataclass(frozen=True)
@@ -154,6 +158,40 @@ def _parse_positive_int(raw: object, task_id: str, field_name: str) -> int:
     if value <= 0:
         raise ManifestError(
             f"Task '{task_id}': '{field_name}' must be a positive integer,"
+            f" got {value!r}."
+        )
+    return value
+
+
+def _parse_non_negative_int(raw: object, task_id: str, field_name: str) -> int:
+    """Parse *raw* as a non-negative integer for a task field.
+
+    Converts *raw* to ``int`` and verifies that the result is greater than or
+    equal to zero.  Both conversion errors and negative values raise
+    :class:`ManifestError` with the task ID and field name embedded so that
+    callers need not duplicate that context.
+
+    Args:
+        raw: The raw value from YAML (expected to be an int or int-convertible).
+        task_id: Identifier of the enclosing task (used in error messages).
+        field_name: The YAML field name being parsed (e.g. ``'max_retries'``).
+
+    Returns:
+        The parsed non-negative integer value.
+
+    Raises:
+        ManifestError: If *raw* cannot be converted to ``int``, or if the
+            resulting integer is negative (``< 0``).
+    """
+    try:
+        value: int = int(raw)  # type: ignore[call-overload]  # int() overloads don't accept `object`
+    except (TypeError, ValueError) as exc:
+        raise ManifestError(
+            f"Task '{task_id}': '{field_name}' must be an integer, got {raw!r}."
+        ) from exc
+    if value < 0:
+        raise ManifestError(
+            f"Task '{task_id}': '{field_name}' must be a non-negative integer,"
             f" got {value!r}."
         )
     return value
@@ -351,6 +389,10 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
     # Deduplicate while preserving order.
     depends_on: tuple[str, ...] = tuple(dict.fromkeys(raw_depends_on))
 
+    max_retries: int = _parse_non_negative_int(
+        raw.get("max_retries", 0), task_id, "max_retries"
+    )
+
     return Task(
         id=task_id,
         agent=agent,
@@ -362,6 +404,7 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
         writes=writes,
         depends_on=depends_on,
         idle_timeout_sec=idle_timeout_sec,
+        max_retries=max_retries,
     )
 
 
