@@ -1154,10 +1154,10 @@ def _compute_task_stages(tasks: Sequence[Task]) -> dict[str, int]:
             break
         next_remaining = []
         for task in remaining:
-            if not task.depends_on:
-                stage[task.id] = 1
-            elif all(dep in stage for dep in task.depends_on):
-                stage[task.id] = max(stage[dep] for dep in task.depends_on) + 1
+            if all(dep in stage for dep in task.depends_on):
+                stage[task.id] = max(
+                    (stage[dep] for dep in task.depends_on), default=0
+                ) + 1
             else:
                 next_remaining.append(task)
                 continue
