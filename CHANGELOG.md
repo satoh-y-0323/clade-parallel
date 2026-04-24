@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-25
+
+### Added
+- **Default concurrency cap (`_DEFAULT_MAX_WORKERS = 3`)**: `run_manifest()` now
+  defaults to 3 parallel workers instead of running all tasks simultaneously,
+  reducing the risk of hitting Claude API rate limits. Override with
+  `--max-workers N` when needed.
+- **`--dry-run` CLI option**: Print the execution plan (task order, stages,
+  timeouts, dependencies) without running any tasks. Exits 0 immediately.
+- **Pre-commit hooks**: Added `.pre-commit-config.yaml` with Black, Ruff, and
+  mypy hooks. Run `pre-commit install` after `pip install -e ".[dev]"`.
+
+### Changed
+- `_compute_task_stages()`: simplified dependency resolution to a single
+  `max(..., default=0) + 1` expression (behaviour unchanged).
+- CI: added `python -m pip install --upgrade pip setuptools` step to both
+  `test` and `pre-commit` jobs to address known pip/setuptools CVEs.
+- CI: added a dedicated `pre-commit` job that runs all hooks against the full
+  codebase on every push/PR.
+
 ## [0.6.1] - 2026-04-24
 
 ### Fixed
