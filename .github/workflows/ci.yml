@@ -41,3 +41,21 @@ jobs:
         # pyproject.toml already sets addopts = "-m 'not slow'", so slow tests
         # are excluded by default.
         run: pytest -q
+
+  pre-commit:
+    name: pre-commit hooks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit on all files
+        run: pre-commit run --all-files
