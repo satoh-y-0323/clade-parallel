@@ -1,6 +1,6 @@
 # clade-parallel
 
-> **Experimental / Alpha — v0.3**
+> **Experimental / Alpha — v0.6**
 > API and CLI are subject to change until v1.0.
 
 Parallel execution wrapper for Clade agents (Python).
@@ -98,6 +98,7 @@ Any Markdown content below the frontmatter is ignored by clade-parallel.
 | `env` | No | Extra environment variables for the subprocess |
 | `writes` | No | List of file paths the task will write (used for static conflict detection) |
 | `depends_on` | No | List of task IDs that must complete before this task starts |
+| `max_retries` | No | `int`, default `0`. Maximum number of additional attempts after the first failure. `0` = no retries. Timeouts and permanent failures (rate limit, permission denied, etc.) are not retried. |
 
 ### Timeout reference values
 
@@ -183,13 +184,27 @@ tasks:
 ---
 ```
 
+### Manifest version history
+
+| `clade_plan_version` | Notable additions |
+|----------------------|-------------------|
+| `"0.1"` | Initial release |
+| `"0.2"` | `writes:` declarations + static conflict checks |
+| `"0.3"` | `depends_on:` DAG scheduler + worktree isolation for write tasks |
+| `"0.4"` | `max_retries` field (automatic retry on transient failures) |
+
+All versions from `0.1` through `0.4` are accepted. Older manifests without
+`clade_plan_version` default to `"0.1"` behavior.
+
 ## CLI options
 
 ```bash
-clade-parallel run <manifest>            # Run all tasks
-clade-parallel run <manifest> --max-workers 2   # Limit parallelism
+clade-parallel run <manifest>                       # Run all tasks
+clade-parallel run <manifest> --max-workers 2        # Limit parallelism
 clade-parallel run <manifest> --claude-exe /path/to/claude  # Custom binary
-clade-parallel run <manifest> --quiet    # Summary only (suppress per-task output)
+clade-parallel run <manifest> --quiet                # Summary only (suppress per-task output)
+clade-parallel run <manifest> --log-dir PATH         # Directory for per-task stdout/stderr logs (default: <git-root>/.claude/logs)
+clade-parallel run <manifest> --no-log               # Disable per-task log file persistence
 clade-parallel --version
 clade-parallel --help
 ```
@@ -221,6 +236,69 @@ result. This helps diagnose what the agent was doing at the moment of the timeou
   There is currently no `--no-tail` flag; if you need to suppress this output entirely,
   redirect stderr to `/dev/null` (`2>/dev/null`).
 
+## Automatic retry
+
+Add `max_retries: N` to any task to automatically retry it up to `N` additional times
+on transient failures. The default is `0` (no retries).
+
+```markdown
+---
+clade_plan_version: "0.4"
+name: "retry-example"
+tasks:
+  - id: flaky-task
+    agent: general-purpose
+    read_only: true
+    prompt: "Do something that might transiently fail"
+    timeout_sec: 300
+    max_retries: 2
+---
+```
+
+**Failure classification:**
+
+clade-parallel classifies each failure into a `failure_category` before deciding whether to retry:
+
+| `failure_category` | Meaning | Retried? |
+|--------------------|---------|----------|
+| `"none"` | Success | — |
+| `"transient"` | Temporary error (e.g., network blip, unknown non-zero exit) | Yes, up to `max_retries` times |
+| `"permanent"` | Unrecoverable error (rate limit, permission denied, authentication failure, etc.) | No — short-circuits immediately |
+| `"timeout"` | Task exceeded `timeout_sec` or `idle_timeout_sec` | No — short-circuits immediately |
+
+**Notes:**
+
+- `failure_category` and `retry_count` are included in the `TaskResult` and shown in the CLI summary.
+- Each attempt counts toward the task's own `timeout_sec` independently; there is no global retry budget.
+- Negative or non-integer values for `max_retries` raise a `ManifestError` at parse time.
+
+## Task logs
+
+By default, clade-parallel saves the stdout and stderr of every task to:
+
+```
+<git-root>/.claude/logs/<task_id>-stdout.log
+<git-root>/.claude/logs/<task_id>-stderr.log
+```
+
+When a task is retried, subsequent attempts are **appended** to the same file with a separator:
+
+```
+===== retry attempt 1 =====
+<output of retry attempt 1>
+```
+
+**CLI options:**
+
+- `--no-log`: Disable log file persistence entirely.
+- `--log-dir PATH`: Override the default log directory.
+
+**Recommended `.gitignore` entry:**
+
+```gitignore
+/.claude/logs/
+```
+
 ## Exit codes
 
 | Code | Meaning |
@@ -230,7 +308,7 @@ result. This helps diagnose what the agent was doing at the moment of the timeou
 | 2 | ManifestError (invalid manifest format) |
 | 3 | RunnerError (e.g., `claude` binary not found) |
 
-## Known limitations (v0.3)
+## Known limitations
 
 - **`/agent-*` (Clade slash commands) in `-p` mode**: Clade's `/agent-*` slash commands
   are designed for interactive use with Q&A and approval dialogs. In `claude -p`
@@ -281,7 +359,9 @@ mypy src/ tests/
 |---------|-------|--------|
 | v0.2 | `writes:` declarations + static conflict checks | Released |
 | v0.3 | `depends_on:` DAG scheduler + worktree isolation for write tasks | Released |
-| v0.4+ | Retry / partial re-run / telemetry | Planned |
+| v0.5 | Progress display, dual timeout (`idle_timeout_sec`), startup phase display | Released |
+| v0.6 | Automatic retry (`max_retries`), per-task log persistence (`--log-dir` / `--no-log`) | In progress |
+| v0.7+ | Partial re-run / telemetry | Planned |
 
 ## License
 

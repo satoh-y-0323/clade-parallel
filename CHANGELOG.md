@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Automatic retry (`max_retries`)**: Tasks can now be retried automatically on
+  transient failures. Add `max_retries: N` to any task in the manifest (default `0`).
+  Permanent failures (rate limit, permission denied, authentication errors, etc.) and
+  timeouts are detected and short-circuit the retry loop immediately.
+- **Per-task log persistence**: stdout and stderr are now saved to
+  `.claude/logs/<task_id>-stdout.log` / `<task_id>-stderr.log` by default.
+  Retry attempts are appended to the same file with a `===== retry attempt N =====`
+  separator. Use `--no-log` to disable or `--log-dir PATH` to change the directory.
+- **`failure_category` field in `TaskResult`**: Classifies the outcome as
+  `"none"` (success), `"timeout"`, `"permanent"`, or `"transient"` (retry limit reached).
+- **`retry_count` field in `TaskResult`**: Records the number of retries performed
+  (0 = no retries or first-attempt success).
+- **`clade_plan_version: "0.4"`**: New manifest version that explicitly signals
+  use of `max_retries`. Version `0.3` and earlier remain accepted.
+- **`--log-dir PATH` CLI option**: Override the default log directory.
+- **`--no-log` CLI option**: Disable per-task log persistence entirely.
+
 ## [0.5.3] - 2026-04-23
 
 ### Fixed
