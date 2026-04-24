@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-24
+
+### Fixed
+- Lint: shorten lines exceeding the 88-character ruff E501 limit in `cli.py` and
+  `runner.py` (comments and docstrings only; no logic changes).
+- Style: apply `black` formatting to `tests/test_runner.py`.
+
+## [0.6.0] - 2026-04-24
+
 ### Added
 - **Automatic retry (`max_retries`)**: Tasks can now be retried automatically on
   transient failures. Add `max_retries: N` to any task in the manifest (default `0`).
