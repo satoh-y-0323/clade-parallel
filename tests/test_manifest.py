@@ -2230,3 +2230,109 @@ tasks:
     load_manifest(path)
     captured = capsys.readouterr()
     assert "idle_timeout_sec is ignored for read_only tasks" not in captured.err
+
+
+# ---------------------------------------------------------------------------
+# T1 (v0.6): max_retries field tests (Red phase)
+#
+# These tests verify the `max_retries` field to be introduced in v0.6.
+# All tests in this section are expected to FAIL (Red) until developer
+# implements the max_retries parsing in manifest.py (T2) and adds
+# "0.4" to SUPPORTED_PLAN_VERSIONS.
+# ---------------------------------------------------------------------------
+
+
+def test_max_retries未指定時のデフォルト値は0(manifest_file):
+    """max_retries omitted — Task.max_retries defaults to 0.
+
+    RED: Task dataclass does not yet have a max_retries field, so this test
+    fails with AttributeError until T2 adds the field.
+    """
+    path = manifest_file(MINIMAL_VALID)
+    result = load_manifest(path)
+    for task in result.tasks:
+        assert task.max_retries == 0
+
+
+def test_max_retries_3が正しくパースされる(manifest_file):
+    """max_retries: 3 — Task.max_retries == 3.
+
+    RED: Task has no max_retries field; _parse_task does not parse it.
+    """
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    max_retries: 3
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.tasks[0].max_retries == 3
+
+
+def test_max_retries_負値でManifestErrorが送出される(manifest_file):
+    """max_retries: -1 raises ManifestError (must be non-negative).
+
+    RED: _parse_task does not yet validate max_retries range.
+    """
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    max_retries: -1
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+def test_max_retries_文字列でManifestErrorが送出される(manifest_file):
+    """max_retries: "abc" raises ManifestError (type error).
+
+    RED: _parse_task does not yet validate max_retries type.
+    """
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    max_retries: "abc"
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+def test_clade_plan_version_0_4が受理される(manifest_file):
+    """clade_plan_version: "0.4" is accepted after SUPPORTED_PLAN_VERSIONS update.
+
+    RED: SUPPORTED_PLAN_VERSIONS does not yet contain "0.4", so load_manifest
+    raises ManifestError instead of succeeding.
+    """
+    content = """\
+---
+clade_plan_version: "0.4"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.clade_plan_version == "0.4"
