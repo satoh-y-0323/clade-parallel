@@ -25,6 +25,7 @@ dev = [
     "black",
     "mypy",
     "types-PyYAML",
+    "pre-commit",
 ]
 
 [tool.setuptools.packages.find]

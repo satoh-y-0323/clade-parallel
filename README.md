@@ -362,6 +362,21 @@ black --check src/ tests/
 mypy src/ tests/
 ```
 
+### Pre-commit hooks
+
+To run linting and type checks automatically on every commit, install pre-commit:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+After installation, the hooks run automatically on `git commit`. To run them manually against all files:
+
+```bash
+pre-commit run --all-files
+```
+
 ## Roadmap
 
 | Version | Focus | Status |
