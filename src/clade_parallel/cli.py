@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 import clade_parallel
 
@@ -76,6 +77,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Suppress output for successful tasks.",
     )
+    run_parser.add_argument(
+        "--log-dir",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Directory for per-task stdout/stderr logs (default: <git-root>/.claude/logs).",
+    )
+    run_parser.add_argument(
+        "--no-log",
+        action="store_true",
+        help="Disable per-task stdout/stderr log file persistence.",
+    )
 
     return parser
 
@@ -112,11 +125,19 @@ def _format_summary_line(result: TaskResult) -> str:
     label = _status_label(result)
     returncode_str = str(result.returncode) if result.returncode is not None else "None"
     reason = f" ({result.timeout_reason} timeout)" if result.timeout_reason else ""
+    retries = f" retries={result.retry_count}" if result.retry_count > 0 else ""
+    category = (
+        f" category={result.failure_category}"
+        if result.failure_category != "none"
+        else ""
+    )
     return (
         f"[{label}] {result.task_id} ({result.agent})"
         f" duration={result.duration_sec:.2f}"
         f" returncode={returncode_str}"
         f"{reason}"
+        f"{retries}"
+        f"{category}"
     )
 
 
@@ -198,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
             manifest,
             max_workers=args.max_workers,
             claude_executable=args.claude_exe,
+            log_enabled=not args.no_log,
+            log_dir=args.log_dir,
         )
     except RunnerError as exc:
         print(f"RunnerError: {exc}", file=sys.stderr)
