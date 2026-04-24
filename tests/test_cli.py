@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from clade_parallel.manifest import ManifestError
@@ -28,6 +30,29 @@ def _make_task_result(
         stderr="" if returncode == 0 else "error output",
         timed_out=timed_out,
         duration_sec=duration_sec,
+    )
+
+
+def _make_task_result_with_retry(
+    task_id: str = "t1",
+    agent: str = "code-reviewer",
+    returncode: int = 1,
+    timed_out: bool = False,
+    duration_sec: float = 0.1,
+    retry_count: int = 0,
+    failure_category: str = "none",
+) -> TaskResult:
+    """Build a TaskResult with retry metadata for T9 summary tests."""
+    return TaskResult(
+        task_id=task_id,
+        agent=agent,
+        returncode=returncode,
+        stdout="",
+        stderr="error output",
+        timed_out=timed_out,
+        duration_sec=duration_sec,
+        retry_count=retry_count,
+        failure_category=failure_category,
     )
 
 
@@ -431,3 +456,159 @@ class TestPrintTimeoutTail:
             ), f"Expected '{line}' in stderr, got: {captured.err!r}"
         # Must NOT appear in stdout
         assert captured.out == "", f"Expected empty stdout, got: {captured.out!r}"
+
+
+# ---------------------------------------------------------------------------
+# T9: --no-log / --log-dir オプションのテスト (Red フェーズ)
+# ---------------------------------------------------------------------------
+
+
+class TestLogOptions:
+    """Verify --no-log and --log-dir CLI options are forwarded to run_manifest.
+
+    These tests are written in the Red phase (T9). The --no-log and --log-dir
+    options are not yet implemented in cli.py, so all three tests are expected
+    to FAIL until T10 (cli.py implementation) is completed.
+    """
+
+    def test_no_log_passes_log_enabled_false_to_run_manifest(
+        self, monkeypatch, tmp_path: "pytest.TempPathFactory"
+    ) -> None:
+        """--no-log must pass log_enabled=False to run_manifest."""
+        from clade_parallel import cli
+
+        manifest_path = tmp_path / "manifest.md"
+        manifest_path.write_text("dummy", encoding="utf-8")
+
+        run_result = _make_run_result(_make_task_result("t1", returncode=0))
+
+        received: dict[str, object] = {}
+
+        def capturing_run_manifest(manifest: object, **kwargs: object) -> RunResult:
+            received.update(kwargs)
+            return run_result
+
+        monkeypatch.setattr(cli, "load_manifest", lambda *a, **kw: object())
+        monkeypatch.setattr(cli, "run_manifest", capturing_run_manifest)
+
+        cli.main(["run", str(manifest_path), "--no-log"])
+
+        assert received.get("log_enabled") is False
+
+    def test_log_dir_passes_path_to_run_manifest(
+        self, monkeypatch, tmp_path: "pytest.TempPathFactory"
+    ) -> None:
+        """--log-dir /tmp/foo must pass log_dir=Path('/tmp/foo') to run_manifest."""
+        from clade_parallel import cli
+
+        manifest_path = tmp_path / "manifest.md"
+        manifest_path.write_text("dummy", encoding="utf-8")
+
+        run_result = _make_run_result(_make_task_result("t1", returncode=0))
+
+        received: dict[str, object] = {}
+
+        def capturing_run_manifest(manifest: object, **kwargs: object) -> RunResult:
+            received.update(kwargs)
+            return run_result
+
+        monkeypatch.setattr(cli, "load_manifest", lambda *a, **kw: object())
+        monkeypatch.setattr(cli, "run_manifest", capturing_run_manifest)
+
+        cli.main(["run", str(manifest_path), "--log-dir", "/tmp/foo"])
+
+        assert received.get("log_dir") == Path("/tmp/foo")
+
+    def test_default_options_pass_log_enabled_true_and_log_dir_none(
+        self, monkeypatch, tmp_path: "pytest.TempPathFactory"
+    ) -> None:
+        """Without --no-log / --log-dir, run_manifest receives log_enabled=True
+        and log_dir=None (default behaviour)."""
+        from clade_parallel import cli
+
+        manifest_path = tmp_path / "manifest.md"
+        manifest_path.write_text("dummy", encoding="utf-8")
+
+        run_result = _make_run_result(_make_task_result("t1", returncode=0))
+
+        received: dict[str, object] = {}
+
+        def capturing_run_manifest(manifest: object, **kwargs: object) -> RunResult:
+            received.update(kwargs)
+            return run_result
+
+        monkeypatch.setattr(cli, "load_manifest", lambda *a, **kw: object())
+        monkeypatch.setattr(cli, "run_manifest", capturing_run_manifest)
+
+        cli.main(["run", str(manifest_path)])
+
+        assert received.get("log_enabled") is True
+        assert received.get("log_dir") is None
+
+
+# ---------------------------------------------------------------------------
+# T9: サマリー出力のテスト (Red フェーズ)
+# ---------------------------------------------------------------------------
+
+
+class TestSummaryRetryInfo:
+    """Verify that _format_summary_line includes retry/category info when present.
+
+    These tests are written in the Red phase (T9). The retries= and category=
+    modifiers are not yet implemented in _format_summary_line, so tests 4 and 5
+    are expected to FAIL until T10 is completed. Test 6 (absence check) may pass
+    immediately but is included to lock in the negative-case contract.
+    """
+
+    def test_retry_count_greater_than_zero_shows_retries_field(self) -> None:
+        """When retry_count > 0, summary line must contain 'retries=N'."""
+        from clade_parallel import cli
+
+        result = _make_task_result_with_retry(
+            task_id="t-retry",
+            returncode=1,
+            retry_count=3,
+            failure_category="transient",
+        )
+
+        line = cli._format_summary_line(result)
+
+        assert "retries=3" in line, f"Expected 'retries=3' in summary line: {line!r}"
+
+    def test_failure_category_non_none_shows_category_field(self) -> None:
+        """When failure_category != 'none', summary line must contain 'category=<value>'."""
+        from clade_parallel import cli
+
+        result = _make_task_result_with_retry(
+            task_id="t-perm",
+            returncode=126,
+            retry_count=0,
+            failure_category="permanent",
+        )
+
+        line = cli._format_summary_line(result)
+
+        assert (
+            "category=permanent" in line
+        ), f"Expected 'category=permanent' in summary line: {line!r}"
+
+    def test_default_retry_count_and_none_category_hides_retry_fields(self) -> None:
+        """When retry_count=0 and failure_category='none', summary must NOT contain
+        'retries=' or 'category=' substrings."""
+        from clade_parallel import cli
+
+        result = _make_task_result_with_retry(
+            task_id="t-ok",
+            returncode=0,
+            retry_count=0,
+            failure_category="none",
+        )
+
+        line = cli._format_summary_line(result)
+
+        assert (
+            "retries=" not in line
+        ), f"Unexpected 'retries=' in summary line: {line!r}"
+        assert (
+            "category=" not in line
+        ), f"Unexpected 'category=' in summary line: {line!r}"

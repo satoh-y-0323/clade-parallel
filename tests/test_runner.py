@@ -2171,3 +2171,363 @@ def test_LogConfig_frozen_dataclassとして構築できる(tmp_path):
     # Verify frozen: assignment must raise FrozenInstanceError (or AttributeError)
     with pytest.raises((AttributeError, TypeError)):
         config_default.enabled = False  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# T7: リトライラッパー層テスト仕様設計（Red フェーズ）
+#
+# 以下のテストは T8 実装完了前に FAIL することが期待される。
+# 期待される失敗理由:
+#   - _execute_with_retry: AttributeError (関数が未実装)
+#
+# _execute_task を monkeypatch して _execute_with_retry の動作を検証する。
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# T7: ヘルパー — テスト用 Task / TaskResult ファクトリ
+# ---------------------------------------------------------------------------
+
+
+def _make_task(max_retries: int = 0) -> "Task":
+    """Build a minimal read-only Task for retry wrapper tests."""
+    return Task(
+        id="t1",
+        agent="dev",
+        read_only=True,
+        prompt="p",
+        timeout_sec=900,
+        cwd=Path("."),
+        env={},
+        max_retries=max_retries,
+    )
+
+
+def _make_task_result(
+    *,
+    returncode: int | None = 0,
+    timed_out: bool = False,
+    stderr: str = "",
+    stdout: str = "ok",
+) -> "TaskResult":
+    """Build a minimal TaskResult for retry wrapper tests."""
+    import clade_parallel.runner as runner_module
+
+    return runner_module.TaskResult(
+        task_id="t1",
+        agent="dev",
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=timed_out,
+        duration_sec=1.0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# T7-1: max_retries=0 で失敗 — 1 回だけ呼ばれ retry_count=0, failure_category="transient"
+# ---------------------------------------------------------------------------
+
+
+def test_execute_with_retry_max_retries0で失敗した場合1回だけ呼ばれretry_count0になる(
+    monkeypatch,
+):
+    """_execute_with_retry with max_retries=0 and failing _execute_task:
+    calls _execute_task once, returns retry_count=0 and failure_category='transient'.
+
+    Red: _execute_with_retry does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    call_count = [0]
+
+    def fake_execute_task(task: Any, claude_exe: str, **kwargs: Any) -> Any:
+        call_count[0] += 1
+        return _make_task_result(returncode=1, stderr="something transient")
+
+    monkeypatch.setattr(runner_module, "_execute_task", fake_execute_task)
+
+    execute_with_retry = getattr(runner_module, "_execute_with_retry")
+
+    task = _make_task(max_retries=0)
+    result = execute_with_retry(task, "claude", git_root=None, log_config=None)
+
+    assert call_count[0] == 1, (
+        f"Expected _execute_task to be called 1 time, but got {call_count[0]}"
+    )
+    assert result.retry_count == 0, (
+        f"Expected retry_count=0, got {result.retry_count}"
+    )
+    assert result.failure_category == "transient", (
+        f"Expected failure_category='transient', got {result.failure_category!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T7-2: max_retries=2, 1回目 transient 失敗・2回目成功
+#        → 2 回呼ばれ retry_count=1, ok=True, failure_category="none"
+# ---------------------------------------------------------------------------
+
+
+def test_execute_with_retry_max_retries2で1回目失敗2回目成功の場合2回呼ばれretry_count1になる(
+    monkeypatch,
+):
+    """_execute_with_retry with max_retries=2: first attempt fails (transient),
+    second attempt succeeds → called twice, retry_count=1, ok=True,
+    failure_category='none'.
+
+    Red: _execute_with_retry does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    call_count = [0]
+
+    def fake_execute_task(task: Any, claude_exe: str, **kwargs: Any) -> Any:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _make_task_result(returncode=1, stderr="transient error")
+        return _make_task_result(returncode=0, stdout="success")
+
+    monkeypatch.setattr(runner_module, "_execute_task", fake_execute_task)
+
+    execute_with_retry = getattr(runner_module, "_execute_with_retry")
+
+    task = _make_task(max_retries=2)
+    result = execute_with_retry(task, "claude", git_root=None, log_config=None)
+
+    assert call_count[0] == 2, (
+        f"Expected _execute_task to be called 2 times, but got {call_count[0]}"
+    )
+    assert result.retry_count == 1, (
+        f"Expected retry_count=1, got {result.retry_count}"
+    )
+    assert result.ok is True, f"Expected ok=True, got {result.ok}"
+    assert result.failure_category == "none", (
+        f"Expected failure_category='none', got {result.failure_category!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T7-3: max_retries=2, timed_out=True → 1 回だけ呼ばれ failure_category="timeout", retry_count=0
+# ---------------------------------------------------------------------------
+
+
+def test_execute_with_retry_max_retries2でtimed_outの場合1回だけで終了しfailure_category_timeout(
+    monkeypatch,
+):
+    """_execute_with_retry with timed_out=True: stops immediately, does not retry.
+    Returns failure_category='timeout' and retry_count=0.
+
+    Red: _execute_with_retry does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    call_count = [0]
+
+    def fake_execute_task(task: Any, claude_exe: str, **kwargs: Any) -> Any:
+        call_count[0] += 1
+        return _make_task_result(returncode=None, timed_out=True)
+
+    monkeypatch.setattr(runner_module, "_execute_task", fake_execute_task)
+
+    execute_with_retry = getattr(runner_module, "_execute_with_retry")
+
+    task = _make_task(max_retries=2)
+    result = execute_with_retry(task, "claude", git_root=None, log_config=None)
+
+    assert call_count[0] == 1, (
+        f"Expected _execute_task to be called 1 time (no retry on timeout), "
+        f"but got {call_count[0]}"
+    )
+    assert result.failure_category == "timeout", (
+        f"Expected failure_category='timeout', got {result.failure_category!r}"
+    )
+    assert result.retry_count == 0, (
+        f"Expected retry_count=0, got {result.retry_count}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T7-4: max_retries=2, permanent 検知 → 1 回だけ呼ばれ failure_category="permanent", retry_count=0
+# ---------------------------------------------------------------------------
+
+
+def test_execute_with_retry_max_retries2でpermanent検知の場合1回だけで終了しfailure_category_permanent(
+    monkeypatch,
+):
+    """_execute_with_retry with returncode=126 (permanent): stops immediately.
+    Returns failure_category='permanent' and retry_count=0.
+
+    Red: _execute_with_retry does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    call_count = [0]
+
+    def fake_execute_task(task: Any, claude_exe: str, **kwargs: Any) -> Any:
+        call_count[0] += 1
+        # returncode=126 is in _PERMANENT_RETURNCODES → classified as permanent
+        return _make_task_result(returncode=126, stderr="")
+
+    monkeypatch.setattr(runner_module, "_execute_task", fake_execute_task)
+
+    execute_with_retry = getattr(runner_module, "_execute_with_retry")
+
+    task = _make_task(max_retries=2)
+    result = execute_with_retry(task, "claude", git_root=None, log_config=None)
+
+    assert call_count[0] == 1, (
+        f"Expected _execute_task to be called 1 time (no retry on permanent), "
+        f"but got {call_count[0]}"
+    )
+    assert result.failure_category == "permanent", (
+        f"Expected failure_category='permanent', got {result.failure_category!r}"
+    )
+    assert result.retry_count == 0, (
+        f"Expected retry_count=0, got {result.retry_count}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T7-5: max_retries=2, 3 回とも transient 失敗
+#        → 3 回呼ばれ retry_count=2, failure_category="transient"
+# ---------------------------------------------------------------------------
+
+
+def test_execute_with_retry_max_retries2で3回ともtransient失敗の場合3回呼ばれretry_count2になる(
+    monkeypatch,
+):
+    """_execute_with_retry with max_retries=2 and three consecutive transient failures:
+    calls _execute_task 3 times (attempt 0, 1, 2), returns retry_count=2 and
+    failure_category='transient'.
+
+    Red: _execute_with_retry does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    call_count = [0]
+
+    def fake_execute_task(task: Any, claude_exe: str, **kwargs: Any) -> Any:
+        call_count[0] += 1
+        # returncode=1 is transient (not in _PERMANENT_RETURNCODES, no pattern match)
+        return _make_task_result(returncode=1, stderr="transient error")
+
+    monkeypatch.setattr(runner_module, "_execute_task", fake_execute_task)
+
+    execute_with_retry = getattr(runner_module, "_execute_with_retry")
+
+    task = _make_task(max_retries=2)
+    result = execute_with_retry(task, "claude", git_root=None, log_config=None)
+
+    assert call_count[0] == 3, (
+        f"Expected _execute_task to be called 3 times "
+        f"(initial + 2 retries), but got {call_count[0]}"
+    )
+    assert result.retry_count == 2, (
+        f"Expected retry_count=2, got {result.retry_count}"
+    )
+    assert result.failure_category == "transient", (
+        f"Expected failure_category='transient', got {result.failure_category!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T7-6: リトライ毎に _write_task_logs が呼ばれる
+#        max_retries=1, 1回目失敗・2回目成功 → attempt=0 と attempt=1 でそれぞれ呼ばれる
+# ---------------------------------------------------------------------------
+
+
+def test_execute_with_retry_リトライ毎にwrite_task_logsがattemptインデックスつきで呼ばれる(
+    monkeypatch, tmp_path
+):
+    """_execute_with_retry calls _write_task_logs after each attempt.
+    With max_retries=1: first attempt (failure) calls logs with attempt=0,
+    second attempt (success) calls logs with attempt=1.
+
+    Red: _execute_with_retry does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    call_count = [0]
+    log_call_attempts: list[int] = []
+
+    def fake_execute_task(task: Any, claude_exe: str, **kwargs: Any) -> Any:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _make_task_result(returncode=1, stderr="transient error")
+        return _make_task_result(returncode=0, stdout="success")
+
+    def fake_write_task_logs(
+        task_id: str,
+        stdout: str,
+        stderr: str,
+        *,
+        attempt: int,
+        log_config: Any,
+    ) -> None:
+        log_call_attempts.append(attempt)
+
+    monkeypatch.setattr(runner_module, "_execute_task", fake_execute_task)
+    monkeypatch.setattr(runner_module, "_write_task_logs", fake_write_task_logs)
+
+    execute_with_retry = getattr(runner_module, "_execute_with_retry")
+
+    LogConfig = getattr(runner_module, "LogConfig")
+    log_config = LogConfig(base_dir=tmp_path, enabled=True)
+
+    task = _make_task(max_retries=1)
+    execute_with_retry(task, "claude", git_root=None, log_config=log_config)
+
+    assert len(log_call_attempts) == 2, (
+        f"Expected _write_task_logs to be called twice, "
+        f"but was called {len(log_call_attempts)} times"
+    )
+    assert log_call_attempts[0] == 0, (
+        f"Expected first log call with attempt=0, got {log_call_attempts[0]}"
+    )
+    assert log_call_attempts[1] == 1, (
+        f"Expected second log call with attempt=1, got {log_call_attempts[1]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T7-7: log_config=None ではログ書き込みが行われない
+# ---------------------------------------------------------------------------
+
+
+def test_execute_with_retry_log_config_Noneのときwrite_task_logsが呼ばれない(
+    monkeypatch,
+):
+    """_execute_with_retry with log_config=None must not call _write_task_logs at all.
+
+    Red: _execute_with_retry does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    log_call_count = [0]
+
+    def fake_execute_task(task: Any, claude_exe: str, **kwargs: Any) -> Any:
+        return _make_task_result(returncode=0, stdout="success")
+
+    def fake_write_task_logs(
+        task_id: str,
+        stdout: str,
+        stderr: str,
+        *,
+        attempt: int,
+        log_config: Any,
+    ) -> None:
+        log_call_count[0] += 1
+
+    monkeypatch.setattr(runner_module, "_execute_task", fake_execute_task)
+    monkeypatch.setattr(runner_module, "_write_task_logs", fake_write_task_logs)
+
+    execute_with_retry = getattr(runner_module, "_execute_with_retry")
+
+    task = _make_task(max_retries=0)
+    execute_with_retry(task, "claude", git_root=None, log_config=None)
+
+    assert log_call_count[0] == 0, (
+        f"Expected _write_task_logs to never be called when log_config=None, "
+        f"but was called {log_call_count[0]} times"
+    )
