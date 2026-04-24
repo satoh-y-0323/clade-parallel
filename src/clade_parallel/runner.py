@@ -6,6 +6,7 @@ capturing stdout/stderr and timing for each task.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 import shutil
@@ -25,6 +26,12 @@ from ._exceptions import CladeParallelError
 from .manifest import Manifest, Task, load_manifest
 
 # ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+
+FailureCategory = Literal["transient", "permanent", "timeout", "none"]
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -36,6 +43,17 @@ _CONFLICT_STDERR_MAX_CHARS = 2000
 _PROGRESS_INTERVAL_SEC = 5
 _STARTUP_DISPLAY_SEC = 60
 _LAST_LINES_ON_TIMEOUT = 20
+
+_PERMANENT_RETURNCODES: frozenset[int] = frozenset({2, 126, 127})
+
+_PERMANENT_STDERR_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"rate[\s_-]?limit", re.IGNORECASE),
+    re.compile(r"permission[\s_-]?denied", re.IGNORECASE),
+    re.compile(r"authentication[\s_-]?(failed|error)", re.IGNORECASE),
+    re.compile(r"invalid[\s_-]?api[\s_-]?key", re.IGNORECASE),
+    re.compile(r"credit[\s_-]?balance[\s_-]?(too[\s_-]?low|exceeded)", re.IGNORECASE),
+    re.compile(r"quota[\s_-]?(exceeded|exhausted)", re.IGNORECASE),
+)
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -82,6 +100,11 @@ class TaskResult:
         duration_sec: Wall-clock time in seconds from start to finish.
         skipped: Whether the task was skipped due to a dependency failure.
         branch_name: The worktree branch name for write tasks; None for read_only tasks.
+        timeout_reason: Whether timeout was due to total or idle limit; None if no timeout.
+        retry_count: Number of retries attempted (0 = succeeded or failed on first try).
+        failure_category: Classification of failure reason. "none" on success, "timeout"
+            on timed_out, "permanent" on detected-permanent failure, "transient" on
+            retry-limit exhaustion.
     """
 
     task_id: str
@@ -94,6 +117,8 @@ class TaskResult:
     skipped: bool = False
     branch_name: str | None = None
     timeout_reason: Literal["total", "idle"] | None = None
+    retry_count: int = 0
+    failure_category: FailureCategory = "none"
 
     @property
     def ok(self) -> bool:
@@ -154,6 +179,45 @@ class _RunState:
     lock: threading.Lock = field(default_factory=threading.Lock)
     done_event: threading.Event = field(default_factory=threading.Event)
     kill_reason: Literal["total", "idle"] | None = None
+
+
+def _classify_failure(returncode: int | None, stderr: str) -> FailureCategory:
+    """Classify a non-ok, non-timeout task outcome into retry buckets.
+
+    Pure function: no I/O, no side effects. Called by ``_execute_with_retry``
+    after each attempt that did not time out.
+
+    Args:
+        returncode: The process exit code. None is treated as transient.
+        stderr: Captured stderr text for pattern matching.
+
+    Returns:
+        ``"permanent"`` if any permanent signal is detected, else ``"transient"``.
+    """
+    if returncode is not None and returncode in _PERMANENT_RETURNCODES:
+        return "permanent"
+    for pattern in _PERMANENT_STDERR_PATTERNS:
+        if pattern.search(stderr):
+            return "permanent"
+    return "transient"
+
+
+def _with_retry_info(
+    result: TaskResult, *, retry_count: int, category: FailureCategory
+) -> TaskResult:
+    """Return a copy of *result* with retry metadata attached.
+
+    Args:
+        result: The original TaskResult to copy.
+        retry_count: Number of retries performed.
+        category: Classification of the outcome.
+
+    Returns:
+        A new TaskResult with retry_count and failure_category set.
+    """
+    return dataclasses.replace(
+        result, retry_count=retry_count, failure_category=category
+    )
 
 
 def _require_git_root(cwd: Path) -> Path:
