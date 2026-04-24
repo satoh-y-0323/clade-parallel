@@ -277,6 +277,58 @@ def _write_task_logs(
         pass
 
 
+def _execute_with_retry(
+    task: Task,
+    claude_exe: str,
+    *,
+    git_root: Path | None,
+    log_config: LogConfig | None,
+) -> TaskResult:
+    """Execute *task* with automatic retry on transient failures.
+
+    Runs ``_execute_task`` up to ``task.max_retries + 1`` times. Timeouts
+    and permanent failures short-circuit the retry loop immediately.
+    Each attempt writes logs via ``_write_task_logs`` (best-effort).
+
+    Args:
+        task: Task to execute (uses task.max_retries for retry budget).
+        claude_exe: Path to the claude binary.
+        git_root: Git repository root (required for write tasks).
+        log_config: Logging configuration, or None to disable logging.
+
+    Returns:
+        The final TaskResult with retry_count and failure_category set.
+    """
+    for attempt in range(task.max_retries + 1):
+        result = _execute_task(task, claude_exe, git_root=git_root)
+
+        if log_config is not None:
+            _write_task_logs(
+                result.task_id,
+                result.stdout,
+                result.stderr,
+                attempt=attempt,
+                log_config=log_config,
+            )
+
+        if result.ok:
+            return _with_retry_info(result, retry_count=attempt, category="none")
+
+        if result.timed_out:
+            return _with_retry_info(result, retry_count=attempt, category="timeout")
+
+        category = _classify_failure(result.returncode, result.stderr)
+
+        if category == "permanent":
+            return _with_retry_info(result, retry_count=attempt, category="permanent")
+
+        if attempt >= task.max_retries:
+            return _with_retry_info(result, retry_count=attempt, category="transient")
+
+    # unreachable, but satisfies type checker
+    return _with_retry_info(result, retry_count=task.max_retries, category="transient")
+
+
 def _require_git_root(cwd: Path) -> Path:
     """Return the git repository root containing *cwd*.
 
@@ -1085,6 +1137,8 @@ def run_manifest(
     *,
     max_workers: int | None = None,
     claude_executable: str = _DEFAULT_CLAUDE_EXECUTABLE,
+    log_dir: Path | None = None,
+    log_enabled: bool = True,
 ) -> RunResult:
     """Run all tasks in a manifest concurrently using a thread pool.
 
@@ -1094,6 +1148,9 @@ def run_manifest(
         max_workers: Maximum number of worker threads. Defaults to the number
             of tasks in the manifest (fully parallel). Use 1 for serial execution.
         claude_executable: Name or path of the claude binary to invoke.
+        log_dir: Directory for task stdout/stderr log files. When None and
+            log_enabled is True, defaults to ``(git_root or cwd) / ".claude" / "logs"``.
+        log_enabled: When False, log writing is skipped entirely.
 
     Returns:
         A RunResult containing a TaskResult for each task in the manifest.
@@ -1122,11 +1179,21 @@ def run_manifest(
         # Detached HEAD early-fail: consolidated into _resolve_merge_base_branch.
         base_branch = _resolve_merge_base_branch(default_cwd)
 
-    # Build execute_fn closure that captures the resolved git_root.
+    # Build LogConfig: resolve log directory from explicit arg, git_root, or cwd.
+    log_config: LogConfig | None
+    if log_enabled:
+        resolved_log_dir = log_dir if log_dir is not None else (git_root or default_cwd) / ".claude" / "logs"
+        log_config = LogConfig(base_dir=resolved_log_dir)
+    else:
+        log_config = None
+
+    # Build execute_fn closure that captures the resolved git_root and log_config.
     claude_exe = claude_executable
 
     def execute_fn(task: Task) -> TaskResult:
-        return _execute_task(task, claude_exe, git_root=git_root)
+        return _execute_with_retry(
+            task, claude_exe, git_root=git_root, log_config=log_config
+        )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         scheduler = _DependencyScheduler(tasks, executor, execute_fn)
