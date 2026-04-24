@@ -1861,12 +1861,12 @@ def test_write_task_logs_attempt1でヘッダ付きで追記される(tmp_path):
     stderr_text = stderr_log.read_text(encoding="utf-8")
 
     # Header must appear before the retry content
-    assert "===== retry attempt 1 =====" in stdout_text, (
-        f"Expected retry header in stdout log, got: {stdout_text!r}"
-    )
-    assert "===== retry attempt 1 =====" in stderr_text, (
-        f"Expected retry header in stderr log, got: {stderr_text!r}"
-    )
+    assert (
+        "===== retry attempt 1 =====" in stdout_text
+    ), f"Expected retry header in stdout log, got: {stdout_text!r}"
+    assert (
+        "===== retry attempt 1 =====" in stderr_text
+    ), f"Expected retry header in stderr log, got: {stderr_text!r}"
 
     # Both original and retry content must be present
     assert "first stdout" in stdout_text
@@ -1904,9 +1904,9 @@ def test_write_task_logs_enabled_FalseのときファイルがPATHに生成さ�
 
     # No files should have been created in tmp_path
     created_files = list(tmp_path.iterdir())
-    assert len(created_files) == 0, (
-        f"Expected no log files when enabled=False, but found: {created_files}"
-    )
+    assert (
+        len(created_files) == 0
+    ), f"Expected no log files when enabled=False, but found: {created_files}"
 
 
 # ---------------------------------------------------------------------------
@@ -1947,9 +1947,7 @@ def test_write_task_logs_OSError発生時に例外が伝播しない(tmp_path, m
             log_config=log_config,
         )
     except OSError as exc:
-        pytest.fail(
-            f"_write_task_logs must not propagate OSError, but raised: {exc!r}"
-        )
+        pytest.fail(f"_write_task_logs must not propagate OSError, but raised: {exc!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -1979,9 +1977,9 @@ def test_write_task_logs_base_dirが存在しない場合に自動作成され�
     )
 
     # Directory should have been created
-    assert non_existent_dir.exists(), (
-        f"Expected {non_existent_dir} to be created automatically"
-    )
+    assert (
+        non_existent_dir.exists()
+    ), f"Expected {non_existent_dir} to be created automatically"
     # Log files should be present
     assert (non_existent_dir / "mkdir-task-stdout.log").exists()
     assert (non_existent_dir / "mkdir-task-stderr.log").exists()
@@ -2026,9 +2024,9 @@ def test_write_task_logs_非UTF8文字を含むstdoutでも例外なく書き込
     stdout_log = tmp_path / "unicode-task-stdout.log"
     assert stdout_log.exists()
     written = stdout_log.read_text(encoding="utf-8")
-    assert replacement_char in written, (
-        f"Expected replacement character to be preserved in log, got: {written!r}"
-    )
+    assert (
+        replacement_char in written
+    ), f"Expected replacement character to be preserved in log, got: {written!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -2130,15 +2128,13 @@ def test_execute_with_retry_max_retries0で失敗した場合1回だけ呼ばれ
     task = _make_task(max_retries=0)
     result = execute_with_retry(task, "claude", git_root=None, log_config=None)
 
-    assert call_count[0] == 1, (
-        f"Expected _execute_task to be called 1 time, but got {call_count[0]}"
-    )
-    assert result.retry_count == 0, (
-        f"Expected retry_count=0, got {result.retry_count}"
-    )
-    assert result.failure_category == "transient", (
-        f"Expected failure_category='transient', got {result.failure_category!r}"
-    )
+    assert (
+        call_count[0] == 1
+    ), f"Expected _execute_task to be called 1 time, but got {call_count[0]}"
+    assert result.retry_count == 0, f"Expected retry_count=0, got {result.retry_count}"
+    assert (
+        result.failure_category == "transient"
+    ), f"Expected failure_category='transient', got {result.failure_category!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -2171,16 +2167,14 @@ def test_execute_with_retry_max_retries2で1回目失敗2回目成功の場合2�
     task = _make_task(max_retries=2)
     result = execute_with_retry(task, "claude", git_root=None, log_config=None)
 
-    assert call_count[0] == 2, (
-        f"Expected _execute_task to be called 2 times, but got {call_count[0]}"
-    )
-    assert result.retry_count == 1, (
-        f"Expected retry_count=1, got {result.retry_count}"
-    )
+    assert (
+        call_count[0] == 2
+    ), f"Expected _execute_task to be called 2 times, but got {call_count[0]}"
+    assert result.retry_count == 1, f"Expected retry_count=1, got {result.retry_count}"
     assert result.ok is True, f"Expected ok=True, got {result.ok}"
-    assert result.failure_category == "none", (
-        f"Expected failure_category='none', got {result.failure_category!r}"
-    )
+    assert (
+        result.failure_category == "none"
+    ), f"Expected failure_category='none', got {result.failure_category!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -2213,12 +2207,10 @@ def test_execute_with_retry_max_retries2でtimed_outの場合1回だけで終了
         f"Expected _execute_task to be called 1 time (no retry on timeout), "
         f"but got {call_count[0]}"
     )
-    assert result.failure_category == "timeout", (
-        f"Expected failure_category='timeout', got {result.failure_category!r}"
-    )
-    assert result.retry_count == 0, (
-        f"Expected retry_count=0, got {result.retry_count}"
-    )
+    assert (
+        result.failure_category == "timeout"
+    ), f"Expected failure_category='timeout', got {result.failure_category!r}"
+    assert result.retry_count == 0, f"Expected retry_count=0, got {result.retry_count}"
 
 
 # ---------------------------------------------------------------------------
@@ -2252,12 +2244,10 @@ def test_execute_with_retry_max_retries2でpermanent検知の場合1回だけで
         f"Expected _execute_task to be called 1 time (no retry on permanent), "
         f"but got {call_count[0]}"
     )
-    assert result.failure_category == "permanent", (
-        f"Expected failure_category='permanent', got {result.failure_category!r}"
-    )
-    assert result.retry_count == 0, (
-        f"Expected retry_count=0, got {result.retry_count}"
-    )
+    assert (
+        result.failure_category == "permanent"
+    ), f"Expected failure_category='permanent', got {result.failure_category!r}"
+    assert result.retry_count == 0, f"Expected retry_count=0, got {result.retry_count}"
 
 
 # ---------------------------------------------------------------------------
@@ -2293,12 +2283,10 @@ def test_execute_with_retry_max_retries2で3回ともtransient失敗の場合3�
         f"Expected _execute_task to be called 3 times "
         f"(initial + 2 retries), but got {call_count[0]}"
     )
-    assert result.retry_count == 2, (
-        f"Expected retry_count=2, got {result.retry_count}"
-    )
-    assert result.failure_category == "transient", (
-        f"Expected failure_category='transient', got {result.failure_category!r}"
-    )
+    assert result.retry_count == 2, f"Expected retry_count=2, got {result.retry_count}"
+    assert (
+        result.failure_category == "transient"
+    ), f"Expected failure_category='transient', got {result.failure_category!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -2350,12 +2338,12 @@ def test_execute_with_retry_リトライ毎にwrite_task_logsがattemptインデ
         f"Expected _write_task_logs to be called twice, "
         f"but was called {len(log_call_attempts)} times"
     )
-    assert log_call_attempts[0] == 0, (
-        f"Expected first log call with attempt=0, got {log_call_attempts[0]}"
-    )
-    assert log_call_attempts[1] == 1, (
-        f"Expected second log call with attempt=1, got {log_call_attempts[1]}"
-    )
+    assert (
+        log_call_attempts[0] == 0
+    ), f"Expected first log call with attempt=0, got {log_call_attempts[0]}"
+    assert (
+        log_call_attempts[1] == 1
+    ), f"Expected second log call with attempt=1, got {log_call_attempts[1]}"
 
 
 # ---------------------------------------------------------------------------
