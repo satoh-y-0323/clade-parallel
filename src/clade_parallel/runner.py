@@ -48,7 +48,7 @@ _PERMANENT_RETURNCODES: frozenset[int] = frozenset({2, 126, 127})
 
 _PERMANENT_STDERR_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"rate[\s_-]?limit", re.IGNORECASE),
-    re.compile(r"permission[\s_-]?denied", re.IGNORECASE),
+    re.compile(r"\bpermission[\s_-]?denied\b", re.IGNORECASE),
     re.compile(r"authentication[\s_-]?(failed|error)", re.IGNORECASE),
     re.compile(r"invalid[\s_-]?api[\s_-]?key", re.IGNORECASE),
     re.compile(r"credit[\s_-]?balance[\s_-]?(too[\s_-]?low|exceeded)", re.IGNORECASE),
@@ -252,6 +252,9 @@ def _write_task_logs(
     Any OSError is caught and silently dropped — log failure must never
     affect task outcome.
 
+    Individual fields are passed instead of a full TaskResult to keep the
+    function signature minimal and test-friendly.
+
     Args:
         task_id: The unique identifier of the task.
         stdout: The captured standard output to persist.
@@ -325,8 +328,8 @@ def _execute_with_retry(
         if attempt >= task.max_retries:
             return _with_retry_info(result, retry_count=attempt, category="transient")
 
-    # unreachable, but satisfies type checker
-    return _with_retry_info(result, retry_count=task.max_retries, category="transient")
+    # unreachable: loop body always returns; kept to satisfy type checker.
+    raise AssertionError("_execute_with_retry: loop exited without returning")
 
 
 def _require_git_root(cwd: Path) -> Path:
@@ -1182,7 +1185,11 @@ def run_manifest(
     # Build LogConfig: resolve log directory from explicit arg, git_root, or cwd.
     log_config: LogConfig | None
     if log_enabled:
-        resolved_log_dir = log_dir if log_dir is not None else (git_root or default_cwd) / ".claude" / "logs"
+        resolved_log_dir = (
+            log_dir
+            if log_dir is not None
+            else (git_root or default_cwd) / ".claude" / "logs"
+        )
         log_config = LogConfig(base_dir=resolved_log_dir)
     else:
         log_config = None
