@@ -108,7 +108,9 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Print the execution plan (task order, timeouts, dependencies) "
-            "without running any tasks."
+            "without running any tasks. "
+            "The plan may include task IDs and agent names"
+            " — do not share publicly if these are sensitive."
         ),
     )
 
@@ -236,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ManifestError: {exc}", file=sys.stderr)
         return _EXIT_MANIFEST_ERROR
 
+    # Resolve effective concurrency for display purposes only.
+    # run_manifest() applies _DEFAULT_MAX_WORKERS internally when max_workers is None.
     effective_max_workers = (
         args.max_workers if args.max_workers is not None else _DEFAULT_MAX_WORKERS
     )
