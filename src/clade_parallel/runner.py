@@ -17,7 +17,7 @@ import traceback
 import uuid
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Literal
 
@@ -130,6 +130,30 @@ class RunResult:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class _RunState:
+    """Shared mutable state for _run_with_progress helper threads.
+
+    Attributes:
+        last_output_ts: perf_counter timestamp of the last received output line.
+            Written by reader threads under ``lock``; read by the watchdog under ``lock``.
+        has_received_output: True once any output line has been received.
+            Written by reader threads under ``lock``; read by the watchdog under ``lock``.
+        lock: Protects ``last_output_ts``, ``has_received_output``, and ``kill_reason``.
+        done_event: Set by ``_run_with_progress`` after ``proc.wait()`` to signal
+            the watchdog to exit cleanly.
+        kill_reason: Set by the watchdog thread only (``'idle'`` or ``'total'``), under
+            ``lock``. Read by ``_run_with_progress`` after all threads have joined —
+            no lock needed at read time.
+    """
+
+    last_output_ts: float
+    has_received_output: bool
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    done_event: threading.Event = field(default_factory=threading.Event)
+    kill_reason: Literal["total", "idle"] | None = None
 
 
 def _require_git_root(cwd: Path) -> Path:
@@ -520,11 +544,81 @@ def _worktree_cleanup(git_root: Path, worktree_path: Path) -> None:
         pass
 
 
-def _run_with_progress(
+def _stream_reader(stream: IO[str], buf: list[str], state: _RunState) -> None:
+    """Read *stream* line-by-line into *buf* and update *state* on each line."""
+    for line in stream:
+        buf.append(line)
+        with state.lock:
+            state.last_output_ts = time.perf_counter()
+            state.has_received_output = True
+
+
+def _watchdog_loop(
     proc: subprocess.Popen[str],
     task: Task,
     start: float,
     effective_idle_timeout: int | None,
+    state: _RunState,
+) -> None:
+    """Watch *proc*, print progress, and kill it if a timeout is exceeded."""
+    while True:
+        now = time.perf_counter()
+        # Snapshot last_ts before sleeping; the value is used only for computing
+        # the next sleep duration, not for the idle-timeout decision.
+        with state.lock:
+            last_ts = state.last_output_ts
+        total_remaining = task.timeout_sec - (now - start)
+        idle_remaining = (
+            effective_idle_timeout - (now - last_ts)
+            if effective_idle_timeout is not None
+            else float("inf")
+        )
+        sleep_sec = min(
+            _PROGRESS_INTERVAL_SEC,
+            max(0.05, min(total_remaining, idle_remaining)),
+        )
+        if state.done_event.wait(timeout=sleep_sec):
+            return  # process finished naturally
+
+        now = time.perf_counter()
+        with state.lock:
+            last_ts = state.last_output_ts
+            received = state.has_received_output
+        idle = now - last_ts
+        total = now - start
+
+        if not received and total < _STARTUP_DISPLAY_SEC:
+            print(
+                f"[{task.id}] starting up... {total:.0f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif idle < _PROGRESS_INTERVAL_SEC:
+            print(f"[{task.id}] running...", file=sys.stderr, flush=True)
+        else:
+            print(
+                f"[{task.id}] thinking... {idle:.0f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        if effective_idle_timeout is not None and idle >= effective_idle_timeout:
+            with state.lock:
+                state.kill_reason = "idle"
+            proc.kill()
+            return
+        elif total >= task.timeout_sec:
+            with state.lock:
+                state.kill_reason = "total"
+            proc.kill()
+            return
+
+
+def _run_with_progress(
+    proc: subprocess.Popen[str],
+    task: Task,
+    start: float,
+    effective_idle_timeout: int | None = None,
 ) -> tuple[str, str, bool, Literal["total", "idle"] | None]:
     """Run *proc* to completion with progress reporting and dual timeout.
 
@@ -545,97 +639,32 @@ def _run_with_progress(
     """
     lines_stdout: list[str] = []
     lines_stderr: list[str] = []
-    last_output_ts: list[float] = [start]
-    last_output_lock = threading.Lock()
-    done_event = threading.Event()
-    kill_reason: list[str] = []
-    # Track whether any output has been received yet. During the startup phase
-    # (worktree creation + claude launch takes 60-120s silently), the idle-time
-    # "thinking..." message misleads users into thinking the agent is active.
-    # We show "starting up..." until the first output arrives or the startup
-    # grace period expires.
-    has_received_output: list[bool] = [False]
-
-    def _reader(stream: IO[str], buf: list[str]) -> None:
-        for line in stream:
-            buf.append(line)
-            with last_output_lock:
-                last_output_ts[0] = time.perf_counter()
-                has_received_output[0] = True
+    state = _RunState(last_output_ts=start, has_received_output=False)
 
     stdout_thread = threading.Thread(
-        target=_reader, args=(proc.stdout, lines_stdout), daemon=True
+        target=_stream_reader, args=(proc.stdout, lines_stdout, state), daemon=True
     )
     stderr_thread = threading.Thread(
-        target=_reader, args=(proc.stderr, lines_stderr), daemon=True
+        target=_stream_reader, args=(proc.stderr, lines_stderr, state), daemon=True
+    )
+    watchdog_thread = threading.Thread(
+        target=_watchdog_loop,
+        args=(proc, task, start, effective_idle_timeout, state),
+        daemon=True,
     )
     stdout_thread.start()
     stderr_thread.start()
-
-    def _watchdog() -> None:
-        while True:
-            now = time.perf_counter()
-            # Snapshot last_ts before sleeping; the value is used only for computing
-            # the next sleep duration, not for the idle-timeout decision.
-            with last_output_lock:
-                last_ts = last_output_ts[0]
-            total_remaining = task.timeout_sec - (now - start)
-            idle_remaining = (
-                effective_idle_timeout - (now - last_ts)
-                if effective_idle_timeout is not None
-                else float("inf")
-            )
-            sleep_sec = min(
-                _PROGRESS_INTERVAL_SEC,
-                max(0.05, min(total_remaining, idle_remaining)),
-            )
-            if done_event.wait(timeout=sleep_sec):
-                return  # process finished naturally
-
-            now = time.perf_counter()
-            with last_output_lock:
-                last_ts = last_output_ts[0]
-                received = has_received_output[0]
-            idle = now - last_ts
-            total = now - start
-
-            if not received and total < _STARTUP_DISPLAY_SEC:
-                print(
-                    f"[{task.id}] starting up... {total:.0f}s",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            elif idle < _PROGRESS_INTERVAL_SEC:
-                print(f"[{task.id}] running...", file=sys.stderr, flush=True)
-            else:
-                print(
-                    f"[{task.id}] thinking... {idle:.0f}s",
-                    file=sys.stderr,
-                    flush=True,
-                )
-
-            if effective_idle_timeout is not None and idle >= effective_idle_timeout:
-                kill_reason.append("idle")
-                proc.kill()
-                return
-            elif total >= task.timeout_sec:
-                kill_reason.append("total")
-                proc.kill()
-                return
-
-    watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
     watchdog_thread.start()
 
     proc.wait()
-    done_event.set()
+    state.done_event.set()
     watchdog_thread.join()
     stdout_thread.join()
     stderr_thread.join()
 
-    timed_out = bool(kill_reason)
-    reason: Literal["total", "idle"] | None = (
-        kill_reason[0] if kill_reason else None  # type: ignore[assignment]
-    )
+    # state.kill_reason is only written by watchdog under lock; read after join() — no lock needed.
+    reason: Literal["total", "idle"] | None = state.kill_reason
+    timed_out = reason is not None
     return "".join(lines_stdout), "".join(lines_stderr), timed_out, reason
 
 

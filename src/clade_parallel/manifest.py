@@ -146,7 +146,7 @@ def _parse_positive_int(raw: object, task_id: str, field_name: str) -> int:
             resulting integer is not positive (``<= 0``).
     """
     try:
-        value: int = int(raw)  # type: ignore[call-overload]
+        value: int = int(raw)  # type: ignore[call-overload]  # int() overloads don't accept `object`
     except (TypeError, ValueError) as exc:
         raise ManifestError(
             f"Task '{task_id}': '{field_name}' must be an integer, got {raw!r}."
