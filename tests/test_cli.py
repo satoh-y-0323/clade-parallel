@@ -612,3 +612,122 @@ class TestSummaryRetryInfo:
         assert (
             "category=" not in line
         ), f"Unexpected 'category=' in summary line: {line!r}"
+
+
+# ---------------------------------------------------------------------------
+# Test: --dry-run
+# ---------------------------------------------------------------------------
+
+_DRY_RUN_MANIFEST = """\
+---
+clade_plan_version: "0.1"
+tasks:
+  - id: task-a
+    agent: worktree-developer
+    read_only: false
+    timeout_sec: 900
+    idle_timeout_sec: 600
+  - id: task-b
+    agent: code-reviewer
+    read_only: true
+    timeout_sec: 600
+    depends_on:
+      - task-a
+---
+"""
+
+_DRY_RUN_WITH_RETRIES_MANIFEST = """\
+---
+clade_plan_version: "0.4"
+tasks:
+  - id: task-x
+    agent: worktree-developer
+    read_only: false
+    timeout_sec: 900
+    max_retries: 2
+---
+"""
+
+
+class TestDryRun:
+    def test_dry_run_exits_0_and_does_not_run_tasks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--dry-run returns exit code 0 without invoking run_manifest."""
+        from clade_parallel import cli
+
+        called = []
+
+        def fake_run_manifest(*args, **kwargs):  # type: ignore[override]
+            called.append(True)
+
+        monkeypatch.setattr(cli, "run_manifest", fake_run_manifest)
+
+        p = tmp_path / "manifest.md"
+        p.write_text(_DRY_RUN_MANIFEST, encoding="utf-8")
+
+        code = cli.main(["run", str(p), "--dry-run"])
+
+        assert code == 0
+        assert not called, "run_manifest should not be called in dry-run mode"
+
+    def test_dry_run_output_contains_task_ids(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--dry-run prints both task IDs to stdout."""
+        from clade_parallel import cli
+
+        p = tmp_path / "manifest.md"
+        p.write_text(_DRY_RUN_MANIFEST, encoding="utf-8")
+
+        cli.main(["run", str(p), "--dry-run"])
+
+        out = capsys.readouterr().out
+        assert "task-a" in out
+        assert "task-b" in out
+
+    def test_dry_run_output_shows_stages(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--dry-run shows stage numbers; task-b (depends on task-a) must be stage 2."""
+        from clade_parallel import cli
+
+        p = tmp_path / "manifest.md"
+        p.write_text(_DRY_RUN_MANIFEST, encoding="utf-8")
+
+        cli.main(["run", str(p), "--dry-run"])
+
+        out = capsys.readouterr().out
+        lines = out.splitlines()
+        task_a_line = next(line for line in lines if "task-a" in line)
+        task_b_line = next(line for line in lines if "task-b" in line)
+        assert "[stage 1]" in task_a_line
+        assert "[stage 2]" in task_b_line
+
+    def test_dry_run_shows_max_workers(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--dry-run with --max-workers 5 shows max_workers=5 in the header."""
+        from clade_parallel import cli
+
+        p = tmp_path / "manifest.md"
+        p.write_text(_DRY_RUN_MANIFEST, encoding="utf-8")
+
+        cli.main(["run", str(p), "--dry-run", "--max-workers", "5"])
+
+        out = capsys.readouterr().out
+        assert "max_workers=5" in out
+
+    def test_dry_run_shows_retries_when_nonzero(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--dry-run shows retries=N only when max_retries > 0."""
+        from clade_parallel import cli
+
+        p = tmp_path / "manifest.md"
+        p.write_text(_DRY_RUN_WITH_RETRIES_MANIFEST, encoding="utf-8")
+
+        cli.main(["run", str(p), "--dry-run"])
+
+        out = capsys.readouterr().out
+        assert "retries=2" in out

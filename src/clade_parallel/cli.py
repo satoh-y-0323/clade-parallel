@@ -13,7 +13,14 @@ from pathlib import Path
 import clade_parallel
 
 from .manifest import ManifestError, load_manifest
-from .runner import RunnerError, RunResult, TaskResult, run_manifest
+from .runner import (
+    _DEFAULT_MAX_WORKERS,
+    RunnerError,
+    RunResult,
+    TaskResult,
+    format_dry_run,
+    run_manifest,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -94,6 +101,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Disable per-task log file persistence. "
             "Recommended when running in sensitive or shared environments."
+        ),
+    )
+    run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Print the execution plan (task order, timeouts, dependencies) "
+            "without running any tasks."
         ),
     )
 
@@ -220,6 +235,14 @@ def main(argv: list[str] | None = None) -> int:
     except ManifestError as exc:
         print(f"ManifestError: {exc}", file=sys.stderr)
         return _EXIT_MANIFEST_ERROR
+
+    effective_max_workers = (
+        args.max_workers if args.max_workers is not None else _DEFAULT_MAX_WORKERS
+    )
+
+    if args.dry_run:
+        print(format_dry_run(manifest, max_workers=effective_max_workers))
+        return _EXIT_SUCCESS
 
     try:
         run_result = run_manifest(

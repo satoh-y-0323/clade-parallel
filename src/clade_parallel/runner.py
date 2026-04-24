@@ -1135,6 +1135,87 @@ class _DependencyScheduler:
 
 
 # ---------------------------------------------------------------------------
+# Dry-run helpers
+# ---------------------------------------------------------------------------
+
+
+def _compute_task_stages(tasks: Sequence[Task]) -> dict[str, int]:
+    """Return task_id → stage number (1-based) for each task.
+
+    Stage 1 contains tasks with no dependencies.  Each subsequent stage
+    contains tasks whose dependencies are all resolved in earlier stages.
+    Cycles or unresolvable dependencies are silently assigned stage -1
+    (manifest validation already rejects them before this is called).
+    """
+    stage: dict[str, int] = {}
+    remaining = list(tasks)
+    for _ in range(len(tasks) + 1):
+        if not remaining:
+            break
+        next_remaining = []
+        for task in remaining:
+            if not task.depends_on:
+                stage[task.id] = 1
+            elif all(dep in stage for dep in task.depends_on):
+                stage[task.id] = max(stage[dep] for dep in task.depends_on) + 1
+            else:
+                next_remaining.append(task)
+                continue
+        if len(next_remaining) == len(remaining):
+            break
+        remaining = next_remaining
+    for task in remaining:
+        stage[task.id] = -1
+    return stage
+
+
+def format_dry_run(manifest: Manifest, *, max_workers: int) -> str:
+    """Return a human-readable execution plan without running any tasks.
+
+    Args:
+        manifest: The manifest to describe.
+        max_workers: The concurrency cap to display.
+
+    Returns:
+        A formatted multi-line string describing the execution plan.
+    """
+    tasks = manifest.tasks
+    stages = _compute_task_stages(tasks)
+    num_stages = max(stages.values(), default=0)
+
+    lines: list[str] = [
+        "Dry run — no tasks will be executed.",
+        "",
+        f"Execution plan (max_workers={max_workers}):",
+    ]
+
+    for task in tasks:
+        stage = stages.get(task.id, -1)
+        parts = [
+            f"  [stage {stage}]",
+            f"{task.id}",
+            f"agent={task.agent}",
+            f"timeout={task.timeout_sec}s",
+        ]
+        if task.idle_timeout_sec is not None:
+            parts.append(f"idle={task.idle_timeout_sec}s")
+        if task.max_retries > 0:
+            parts.append(f"retries={task.max_retries}")
+        if task.read_only:
+            parts.append("read_only")
+        if task.depends_on:
+            parts.append(f"depends={list(task.depends_on)}")
+        lines.append("  ".join(parts))
+
+    n = len(tasks)
+    task_word = "task" if n == 1 else "tasks"
+    stage_word = "stage" if num_stages == 1 else "stages"
+    lines.append("")
+    lines.append(f"{n} {task_word}, {num_stages} {stage_word}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
