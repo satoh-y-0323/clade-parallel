@@ -100,7 +100,8 @@ class TaskResult:
         duration_sec: Wall-clock time in seconds from start to finish.
         skipped: Whether the task was skipped due to a dependency failure.
         branch_name: The worktree branch name for write tasks; None for read_only tasks.
-        timeout_reason: Whether timeout was due to total or idle limit; None if no timeout.
+        timeout_reason: Whether timeout was due to total or idle limit; None if
+            no timeout.
         retry_count: Number of retries attempted (0 = succeeded or failed on first try).
         failure_category: Classification of failure reason. "none" on success, "timeout"
             on timed_out, "permanent" on detected-permanent failure, "transient" on
@@ -177,9 +178,11 @@ class _RunState:
 
     Attributes:
         last_output_ts: perf_counter timestamp of the last received output line.
-            Written by reader threads under ``lock``; read by the watchdog under ``lock``.
+            Written by reader threads under ``lock``; read by the watchdog under
+            ``lock``.
         has_received_output: True once any output line has been received.
-            Written by reader threads under ``lock``; read by the watchdog under ``lock``.
+            Written by reader threads under ``lock``; read by the watchdog under
+            ``lock``.
         lock: Protects ``last_output_ts``, ``has_received_output``, and ``kill_reason``.
         done_event: Set by ``_run_with_progress`` after ``proc.wait()`` to signal
             the watchdog to exit cleanly.
@@ -838,7 +841,7 @@ def _run_with_progress(
     stdout_thread.join()
     stderr_thread.join()
 
-    # state.kill_reason is only written by watchdog under lock; read after join() — no lock needed.
+    # state.kill_reason is written by watchdog under lock; safe to read after join().
     reason: Literal["total", "idle"] | None = state.kill_reason
     timed_out = reason is not None
     return "".join(lines_stdout), "".join(lines_stderr), timed_out, reason

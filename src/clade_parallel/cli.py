@@ -83,7 +83,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=(
-            "Directory for per-task stdout/stderr logs (default: <git-root>/.claude/logs). "
+            "Directory for per-task stdout/stderr logs"
+            " (default: <git-root>/.claude/logs). "
             "Logs may contain sensitive information — do not share publicly."
         ),
     )
