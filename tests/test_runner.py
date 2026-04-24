@@ -1659,3 +1659,515 @@ tasks:
     assert (
         "[startup-task] starting up..." in stderr_output
     ), f"Expected 'starting up...' in stderr, got: {stderr_output!r}"
+
+
+# ---------------------------------------------------------------------------
+# T3: ランナー純関数層テスト仕様設計（Red フェーズ）
+#
+# 以下のテストは T4 実装完了前に FAIL することが期待される。
+# 期待される失敗理由:
+#   - _classify_failure: AttributeError (関数が未実装)
+#   - TaskResult.retry_count / failure_category: AttributeError (フィールド未追加)
+#   - _with_retry_info: AttributeError (関数が未実装)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# T3-1: _classify_failure(126, "") → "permanent" (永続的失敗リターンコード)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_failure_returncode_126はpermanentを返す():
+    """_classify_failure(126, '') returns 'permanent' for a permanent returncode.
+
+    Red: _classify_failure does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    classify_failure = getattr(runner_module, "_classify_failure")
+    result = classify_failure(126, "")
+    assert result == "permanent"
+
+
+# ---------------------------------------------------------------------------
+# T3-2: _classify_failure(1, "rate limit exceeded") → "permanent" (stderr パターンマッチ)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_failure_rate_limit_stderrはpermanentを返す():
+    """_classify_failure(1, 'rate limit exceeded') returns 'permanent' (stderr pattern match).
+
+    Red: _classify_failure does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    classify_failure = getattr(runner_module, "_classify_failure")
+    result = classify_failure(1, "rate limit exceeded")
+    assert result == "permanent"
+
+
+# ---------------------------------------------------------------------------
+# T3-3: _classify_failure(1, "something else") → "transient" (パターン非マッチ)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_failure_unknown_stderrはtransientを返す():
+    """_classify_failure(1, 'something else') returns 'transient' (no pattern match).
+
+    Red: _classify_failure does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    classify_failure = getattr(runner_module, "_classify_failure")
+    result = classify_failure(1, "something else")
+    assert result == "transient"
+
+
+# ---------------------------------------------------------------------------
+# T3-4: _classify_failure(None, "") → "transient" (returncode が None)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_failure_returncode_noneはtransientを返す():
+    """_classify_failure(None, '') returns 'transient' when returncode is None.
+
+    Red: _classify_failure does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    classify_failure = getattr(runner_module, "_classify_failure")
+    result = classify_failure(None, "")
+    assert result == "transient"
+
+
+# ---------------------------------------------------------------------------
+# T3-5: _classify_failure(1, "Authentication Failed") → "permanent" (大文字小文字無視)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_failure_authentication_failed_case_insensitiveはpermanentを返す():
+    """_classify_failure(1, 'Authentication Failed') returns 'permanent' (case-insensitive).
+
+    Red: _classify_failure does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    classify_failure = getattr(runner_module, "_classify_failure")
+    result = classify_failure(1, "Authentication Failed")
+    assert result == "permanent"
+
+
+# ---------------------------------------------------------------------------
+# T3-6: TaskResult を retry_count=0, failure_category="none" デフォルト値で構築できる
+# ---------------------------------------------------------------------------
+
+
+def test_TaskResult_retry_countとfailure_categoryのデフォルト値で構築できる():
+    """TaskResult can be constructed with default retry_count=0 and failure_category='none'.
+
+    Red: TaskResult has no 'retry_count' or 'failure_category' fields → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    tr = runner_module.TaskResult(
+        task_id="test-task",
+        agent="code-reviewer",
+        returncode=0,
+        stdout="",
+        stderr="",
+        timed_out=False,
+        duration_sec=0.0,
+    )
+    assert tr.retry_count == 0
+    assert tr.failure_category == "none"
+
+
+# ---------------------------------------------------------------------------
+# T3-7: TaskResult に retry_count / failure_category フィールドが存在する
+# ---------------------------------------------------------------------------
+
+
+def test_TaskResult_retry_countとfailure_categoryフィールドが存在する():
+    """TaskResult has retry_count and failure_category fields.
+
+    Red: TaskResult has no 'retry_count' or 'failure_category' fields → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    tr = runner_module.TaskResult(
+        task_id="test-task",
+        agent="code-reviewer",
+        returncode=0,
+        stdout="",
+        stderr="",
+        timed_out=False,
+        duration_sec=0.0,
+        retry_count=3,
+        failure_category="transient",
+    )
+    assert tr.retry_count == 3
+    assert tr.failure_category == "transient"
+
+
+# ---------------------------------------------------------------------------
+# T3-8: _with_retry_info(result, retry_count=2, category="transient") が新インスタンスを返し
+#        元の result は変更されない（frozen 維持）
+# ---------------------------------------------------------------------------
+
+
+def test_with_retry_info_は新インスタンスを返し元resultは変更されない():
+    """_with_retry_info returns a new TaskResult instance; original is unchanged (frozen).
+
+    Red: _with_retry_info does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    original = runner_module.TaskResult(
+        task_id="orig-task",
+        agent="code-reviewer",
+        returncode=1,
+        stdout="",
+        stderr="some error",
+        timed_out=False,
+        duration_sec=1.0,
+    )
+
+    with_retry_info = getattr(runner_module, "_with_retry_info")
+    updated = with_retry_info(original, retry_count=2, category="transient")
+
+    # Must return a new instance, not the same object.
+    assert updated is not original
+
+    # Original must remain unchanged (frozen dataclass guarantee).
+    assert original.retry_count == 0
+    assert original.failure_category == "none"
+
+
+# ---------------------------------------------------------------------------
+# T3-9: 返り値の retry_count == 2、failure_category == "transient" である
+# ---------------------------------------------------------------------------
+
+
+def test_with_retry_info_返り値のretry_countとfailure_categoryが正しく設定される():
+    """_with_retry_info return value has retry_count=2 and failure_category='transient'.
+
+    Red: _with_retry_info does not exist → AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    original = runner_module.TaskResult(
+        task_id="orig-task",
+        agent="code-reviewer",
+        returncode=1,
+        stdout="",
+        stderr="some error",
+        timed_out=False,
+        duration_sec=1.0,
+    )
+
+    with_retry_info = getattr(runner_module, "_with_retry_info")
+    updated = with_retry_info(original, retry_count=2, category="transient")
+
+    assert updated.retry_count == 2
+    assert updated.failure_category == "transient"
+
+
+# ---------------------------------------------------------------------------
+# T5: ログ保存層テスト仕様設計（Red フェーズ）
+#
+# 以下のテストは T6 実装完了前に FAIL することが期待される。
+# 期待される失敗理由:
+#   - LogConfig: ImportError / AttributeError (クラスが未実装)
+#   - _write_task_logs: AttributeError (関数が未実装)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# T5-1: 初回書き込み (truncate) — attempt=0 で stdout/stderr ファイルが新規作成される
+# ---------------------------------------------------------------------------
+
+
+def test_write_task_logs_attempt0でstdout_stderrファイルが新規作成される(tmp_path):
+    """_write_task_logs with attempt=0 creates <task_id>-stdout.log and
+    <task_id>-stderr.log, writing the given content (truncate mode).
+
+    Red: LogConfig and _write_task_logs do not exist → ImportError / AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    LogConfig = getattr(runner_module, "LogConfig")
+    write_task_logs = getattr(runner_module, "_write_task_logs")
+
+    log_config = LogConfig(base_dir=tmp_path, enabled=True)
+    task_id = "my-task"
+    stdout_content = "hello stdout"
+    stderr_content = "hello stderr"
+
+    write_task_logs(
+        task_id=task_id,
+        stdout=stdout_content,
+        stderr=stderr_content,
+        attempt=0,
+        log_config=log_config,
+    )
+
+    stdout_log = tmp_path / f"{task_id}-stdout.log"
+    stderr_log = tmp_path / f"{task_id}-stderr.log"
+
+    assert stdout_log.exists(), f"Expected {stdout_log} to exist"
+    assert stderr_log.exists(), f"Expected {stderr_log} to exist"
+    assert stdout_log.read_text(encoding="utf-8") == stdout_content
+    assert stderr_log.read_text(encoding="utf-8") == stderr_content
+
+
+# ---------------------------------------------------------------------------
+# T5-2: リトライ時の追記 + ヘッダ — attempt=1 で同一ファイルにヘッダ付き追記される
+# ---------------------------------------------------------------------------
+
+
+def test_write_task_logs_attempt1でヘッダ付きで追記される(tmp_path):
+    """_write_task_logs with attempt=1 appends '===== retry attempt 1 =====' header
+    followed by the new content to existing log files.
+
+    Red: LogConfig and _write_task_logs do not exist → ImportError / AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    LogConfig = getattr(runner_module, "LogConfig")
+    write_task_logs = getattr(runner_module, "_write_task_logs")
+
+    log_config = LogConfig(base_dir=tmp_path, enabled=True)
+    task_id = "retry-task"
+
+    # First write (attempt=0)
+    write_task_logs(
+        task_id=task_id,
+        stdout="first stdout",
+        stderr="first stderr",
+        attempt=0,
+        log_config=log_config,
+    )
+
+    # Second write (attempt=1) — should append with header
+    write_task_logs(
+        task_id=task_id,
+        stdout="second stdout",
+        stderr="second stderr",
+        attempt=1,
+        log_config=log_config,
+    )
+
+    stdout_log = tmp_path / f"{task_id}-stdout.log"
+    stderr_log = tmp_path / f"{task_id}-stderr.log"
+
+    stdout_text = stdout_log.read_text(encoding="utf-8")
+    stderr_text = stderr_log.read_text(encoding="utf-8")
+
+    # Header must appear before the retry content
+    assert "===== retry attempt 1 =====" in stdout_text, (
+        f"Expected retry header in stdout log, got: {stdout_text!r}"
+    )
+    assert "===== retry attempt 1 =====" in stderr_text, (
+        f"Expected retry header in stderr log, got: {stderr_text!r}"
+    )
+
+    # Both original and retry content must be present
+    assert "first stdout" in stdout_text
+    assert "second stdout" in stdout_text
+    assert "first stderr" in stderr_text
+    assert "second stderr" in stderr_text
+
+    # Header must appear AFTER the first content (append order)
+    assert stdout_text.index("first stdout") < stdout_text.index(
+        "===== retry attempt 1 ====="
+    )
+
+
+# ---------------------------------------------------------------------------
+# T5-3: enabled=False でスキップ — ファイルが生成されない
+# ---------------------------------------------------------------------------
+
+
+def test_write_task_logs_enabled_FalseのときファイルがPATHに生成されない(tmp_path):
+    """_write_task_logs with LogConfig(enabled=False) must not create any log files.
+
+    Red: LogConfig and _write_task_logs do not exist → ImportError / AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    LogConfig = getattr(runner_module, "LogConfig")
+    write_task_logs = getattr(runner_module, "_write_task_logs")
+
+    log_config = LogConfig(base_dir=tmp_path, enabled=False)
+
+    write_task_logs(
+        task_id="disabled-task",
+        stdout="should not be written",
+        stderr="should not be written",
+        attempt=0,
+        log_config=log_config,
+    )
+
+    # No files should have been created in tmp_path
+    created_files = list(tmp_path.iterdir())
+    assert len(created_files) == 0, (
+        f"Expected no log files when enabled=False, but found: {created_files}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T5-4: OSError を握りつぶす — 書き込み不能ディレクトリでも例外が発生しない
+# ---------------------------------------------------------------------------
+
+
+def test_write_task_logs_OSError発生時に例外が伝播しない(tmp_path, monkeypatch):
+    """_write_task_logs must swallow OSError silently (best-effort logging).
+
+    Simulates a write failure by monkeypatching Path.open to raise OSError.
+
+    Red: LogConfig and _write_task_logs do not exist → ImportError / AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    LogConfig = getattr(runner_module, "LogConfig")
+    write_task_logs = getattr(runner_module, "_write_task_logs")
+
+    # Patch builtins.open to raise OSError when called for log paths
+    original_open = open
+
+    def raising_open(path, mode="r", **kwargs):
+        path_obj = Path(path) if not isinstance(path, Path) else path
+        if "stdout.log" in str(path_obj) or "stderr.log" in str(path_obj):
+            raise OSError("Permission denied: simulated write failure")
+        return original_open(path, mode, **kwargs)
+
+    monkeypatch.setattr("builtins.open", raising_open)
+
+    log_config = LogConfig(base_dir=tmp_path, enabled=True)
+
+    # Must NOT raise — OSError must be swallowed internally
+    try:
+        write_task_logs(
+            task_id="oserror-task",
+            stdout="some output",
+            stderr="some error",
+            attempt=0,
+            log_config=log_config,
+        )
+    except OSError as exc:
+        pytest.fail(
+            f"_write_task_logs must not propagate OSError, but raised: {exc!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T5-5: ディレクトリ自動作成 — base_dir が存在しない場合に自動作成される
+# ---------------------------------------------------------------------------
+
+
+def test_write_task_logs_base_dirが存在しない場合に自動作成される(tmp_path):
+    """_write_task_logs creates base_dir automatically if it does not exist.
+
+    Red: LogConfig and _write_task_logs do not exist → ImportError / AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    LogConfig = getattr(runner_module, "LogConfig")
+    write_task_logs = getattr(runner_module, "_write_task_logs")
+
+    # Use a nested path that does not exist yet
+    non_existent_dir = tmp_path / "deep" / "nested" / "logs"
+    assert not non_existent_dir.exists(), "Precondition: directory must not exist"
+
+    log_config = LogConfig(base_dir=non_existent_dir, enabled=True)
+
+    write_task_logs(
+        task_id="mkdir-task",
+        stdout="output content",
+        stderr="error content",
+        attempt=0,
+        log_config=log_config,
+    )
+
+    # Directory should have been created
+    assert non_existent_dir.exists(), (
+        f"Expected {non_existent_dir} to be created automatically"
+    )
+    # Log files should be present
+    assert (non_existent_dir / "mkdir-task-stdout.log").exists()
+    assert (non_existent_dir / "mkdir-task-stderr.log").exists()
+
+
+# ---------------------------------------------------------------------------
+# T5-6: 非 UTF-8 への対応 — 置換文字を含む stdout でもエラーなく書き込まれる
+# ---------------------------------------------------------------------------
+
+
+def test_write_task_logs_非UTF8文字を含むstdoutでも例外なく書き込まれる(tmp_path):
+    """_write_task_logs handles stdout containing the replacement character U+FFFD
+    (written when errors='replace' is applied during subprocess output decoding)
+    without raising any exception.
+
+    Red: LogConfig and _write_task_logs do not exist → ImportError / AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    LogConfig = getattr(runner_module, "LogConfig")
+    write_task_logs = getattr(runner_module, "_write_task_logs")
+
+    log_config = LogConfig(base_dir=tmp_path, enabled=True)
+
+    # U+FFFD is the Unicode replacement character — this is what errors="replace"
+    # produces when subprocess reads invalid bytes from the process.
+    replacement_char = "�"
+    stdout_with_replacement = f"output with {replacement_char} replacement char"
+
+    try:
+        write_task_logs(
+            task_id="unicode-task",
+            stdout=stdout_with_replacement,
+            stderr="normal stderr",
+            attempt=0,
+            log_config=log_config,
+        )
+    except Exception as exc:
+        pytest.fail(
+            f"_write_task_logs must not raise on non-UTF-8 replacement chars, "
+            f"but raised: {exc!r}"
+        )
+
+    stdout_log = tmp_path / "unicode-task-stdout.log"
+    assert stdout_log.exists()
+    written = stdout_log.read_text(encoding="utf-8")
+    assert replacement_char in written, (
+        f"Expected replacement character to be preserved in log, got: {written!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T5-7: LogConfig dataclass — base_dir と enabled フィールドを持つ frozen dataclass
+# ---------------------------------------------------------------------------
+
+
+def test_LogConfig_frozen_dataclassとして構築できる(tmp_path):
+    """LogConfig is a frozen dataclass with base_dir: Path and enabled: bool = True.
+
+    Red: LogConfig does not exist → ImportError / AttributeError.
+    """
+    import clade_parallel.runner as runner_module
+
+    LogConfig = getattr(runner_module, "LogConfig")
+
+    # Construct with both arguments
+    config_explicit = LogConfig(base_dir=tmp_path, enabled=False)
+    assert config_explicit.base_dir == tmp_path
+    assert config_explicit.enabled is False
+
+    # Construct with default enabled=True
+    config_default = LogConfig(base_dir=tmp_path)
+    assert config_default.base_dir == tmp_path
+    assert config_default.enabled is True
+
+    # Verify frozen: assignment must raise FrozenInstanceError (or AttributeError)
+    with pytest.raises((AttributeError, TypeError)):
+        config_default.enabled = False  # type: ignore[misc]

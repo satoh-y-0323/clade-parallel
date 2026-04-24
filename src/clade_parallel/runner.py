@@ -152,6 +152,20 @@ class RunResult:
         return all(r.ok for r in self.results)
 
 
+@dataclass(frozen=True)
+class LogConfig:
+    """Configuration for task-level log persistence.
+
+    Attributes:
+        base_dir: Directory where log files are written. Created lazily on
+            first write if it does not exist.
+        enabled: When False, all log writes are skipped entirely.
+    """
+
+    base_dir: Path
+    enabled: bool = True
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -218,6 +232,49 @@ def _with_retry_info(
     return dataclasses.replace(
         result, retry_count=retry_count, failure_category=category
     )
+
+
+def _write_task_logs(
+    task_id: str,
+    stdout: str,
+    stderr: str,
+    *,
+    attempt: int,
+    log_config: LogConfig,
+) -> None:
+    """Persist a task's stdout/stderr to files on a best-effort basis.
+
+    On the first attempt (``attempt == 0``), files are truncated and written
+    from scratch. Subsequent attempts append with a separator header
+    ``===== retry attempt N =====`` so that all attempts are preserved in a
+    single file pair per task.
+
+    Any OSError is caught and silently dropped — log failure must never
+    affect task outcome.
+
+    Args:
+        task_id: The unique identifier of the task.
+        stdout: The captured standard output to persist.
+        stderr: The captured standard error to persist.
+        attempt: Zero-based attempt index (0 = first try, 1 = first retry).
+        log_config: Log directory and enabled flag.
+    """
+    if not log_config.enabled:
+        return
+    try:
+        log_config.base_dir.mkdir(parents=True, exist_ok=True)
+        stdout_path = log_config.base_dir / f"{task_id}-stdout.log"
+        stderr_path = log_config.base_dir / f"{task_id}-stderr.log"
+        mode = "w" if attempt == 0 else "a"
+        header = f"\n===== retry attempt {attempt} =====\n" if attempt > 0 else ""
+        with stdout_path.open(mode, encoding="utf-8", errors="replace") as fp:
+            fp.write(header)
+            fp.write(stdout)
+        with stderr_path.open(mode, encoding="utf-8", errors="replace") as fp:
+            fp.write(header)
+            fp.write(stderr)
+    except OSError:
+        pass
 
 
 def _require_git_root(cwd: Path) -> Path:
