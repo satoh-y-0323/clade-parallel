@@ -364,10 +364,10 @@ mypy src/ tests/
 
 ### Pre-commit hooks
 
-To run linting and type checks automatically on every commit, install pre-commit:
+To run linting and type checks automatically on every commit, install the hooks
+(`pre-commit` is included in `.[dev]`):
 
 ```bash
-pip install pre-commit
 pre-commit install
 ```
 
@@ -376,6 +376,11 @@ After installation, the hooks run automatically on `git commit`. To run them man
 ```bash
 pre-commit run --all-files
 ```
+
+> **Keeping hook versions in sync:** The `rev:` values in `.pre-commit-config.yaml`
+> are pinned to specific tool versions. When you upgrade `black`, `ruff`, or `mypy`
+> in your development environment, update the corresponding `rev:` as well.
+> Run `pip show black ruff mypy` to check your installed versions before updating.
 
 ## Roadmap
 
