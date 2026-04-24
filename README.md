@@ -271,6 +271,8 @@ clade-parallel classifies each failure into a `failure_category` before deciding
 - `failure_category` and `retry_count` are included in the `TaskResult` and shown in the CLI summary.
 - Each attempt counts toward the task's own `timeout_sec` independently; there is no global retry budget.
 - Negative or non-integer values for `max_retries` raise a `ManifestError` at parse time.
+- A reasonable upper bound is 3–5 retries. Very large values (e.g. > 10) can
+  waste significant token budget if the failure is systemic rather than transient.
 
 ## Task logs
 
@@ -298,6 +300,13 @@ When a task is retried, subsequent attempts are **appended** to the same file wi
 ```gitignore
 /.claude/logs/
 ```
+
+> **Security note**: Task logs may contain sensitive information such as API
+> keys or credentials that appear in stderr output. The `.claude/logs/`
+> directory is excluded from git by default (add `/.claude/logs/` to
+> `.gitignore`), but avoid uploading logs as CI artefacts or sharing them
+> publicly. Use `--no-log` to disable log persistence when running in
+> sensitive environments.
 
 ## Exit codes
 
