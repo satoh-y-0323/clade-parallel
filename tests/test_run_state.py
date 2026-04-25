@@ -312,7 +312,7 @@ def test_different_manifests_use_different_state_files(tmp_path: Path) -> None:
     manifest_b.write_text(SINGLE_TASK_CONTENT, encoding="utf-8")
 
     state_a = create_run_state(manifest_a)
-    state_b = create_run_state(manifest_b)
+    create_run_state(manifest_b)
 
     path_a = _state_path(manifest_a)
     path_b = _state_path(manifest_b)

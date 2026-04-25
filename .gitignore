@@ -16,3 +16,6 @@ htmlcov/
 
 # clade-parallel isolated worktrees (v0.3)
 .clade-worktrees/
+
+# clade-parallel run-state files (contain absolute paths and task IDs)
+.clade-run-state-*.json

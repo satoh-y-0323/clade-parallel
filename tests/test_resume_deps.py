@@ -11,13 +11,9 @@ import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
-
-import pytest
 
 from clade_parallel.manifest import Task
 from clade_parallel.runner import (
-    RunnerError,
     TaskResult,
     _DependencyScheduler,  # noqa: PLC2701
 )
@@ -185,6 +181,59 @@ def test_resume_dep_chain_A_resumed_B_not_C_not() -> None:
     assert results_by_id["task-a"].resumed is True
     assert results_by_id["task-b"].ok is True
     assert results_by_id["task-c"].ok is True
+
+
+def test_resume_dep_chain_A_not_resumed_B_resumed_C_resumed_D_executes() -> None:
+    """A → B(resumed) → C(resumed) → D: D is executed after A, B and C are not executed."""
+    task_a = _make_read_only_task("task-a")
+    task_b = _make_read_only_task("task-b", depends_on=["task-a"])
+    task_c = _make_read_only_task("task-c", depends_on=["task-b"])
+    task_d = _make_read_only_task("task-d", depends_on=["task-c"])
+
+    tasks = [task_a, task_b, task_c, task_d]
+    execution_order: list[str] = []
+    lock = threading.Lock()
+    a_done_event = threading.Event()
+
+    def execute_fn(task: Task) -> TaskResult:
+        with lock:
+            execution_order.append(task.id)
+        if task.id == "task-a":
+            time.sleep(0.05)
+            a_done_event.set()
+        elif task.id == "task-d":
+            assert a_done_event.is_set(), (
+                "task-d started before task-a finished — dependency violation!"
+            )
+        return _make_ok_result(task)
+
+    # B and C are resumed; A and D are not.
+    resumed_ids = frozenset({"task-b", "task-c"})
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        scheduler = _DependencyScheduler(
+            tasks, executor, execute_fn, resumed_task_ids=resumed_ids
+        )
+        results = scheduler.run()
+
+    # B and C must not be executed (resumed).
+    assert "task-b" not in execution_order, "task-b should be skipped (resumed)"
+    assert "task-c" not in execution_order, "task-c should be skipped (resumed)"
+
+    # A and D must be executed in order.
+    assert "task-a" in execution_order, "task-a was never executed"
+    assert "task-d" in execution_order, "task-d was never executed"
+    assert execution_order.index("task-a") < execution_order.index("task-d"), (
+        f"Expected task-a before task-d, but got order: {execution_order}"
+    )
+
+    results_by_id = {r.task_id: r for r in results}
+    assert results_by_id["task-a"].ok is True
+    assert results_by_id["task-b"].resumed is True
+    assert results_by_id["task-b"].ok is True
+    assert results_by_id["task-c"].resumed is True
+    assert results_by_id["task-c"].ok is True
+    assert results_by_id["task-d"].ok is True
 
 
 def test_resume_dep_chain_no_resumed_normal_order() -> None:

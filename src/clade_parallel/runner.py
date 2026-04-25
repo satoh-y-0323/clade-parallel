@@ -31,6 +31,7 @@ from .run_state import (
     load_run_state,
     mark_task_completed,
     state_file_exists,
+    state_file_path,
 )
 
 # ---------------------------------------------------------------------------
@@ -1075,6 +1076,55 @@ class _DependencyScheduler:
     # Main loop
     # ------------------------------------------------------------------
 
+    def _unlock_task(
+        self,
+        task_id: str,
+        results: dict[str, TaskResult],
+        future_to_task: dict[Future[TaskResult], Task],
+        pending: set[Future[TaskResult]],
+    ) -> None:
+        """Resolve a single task whose indegree just reached 0.
+
+        Handles three cases in order:
+        1. **Resumed** — task already succeeded in a prior run: mark it as
+           resumed, record the result, then recursively unlock its
+           downstream tasks.
+        2. **Skipped** — a direct dependency failed: mark it as skipped and
+           call ``_propagate_skip`` so further downstream tasks are also
+           pre-empted without waiting forever.
+        3. **Normal** — submit the task to the executor.
+
+        By centralising the resumed/skip/submit decision here, deep chains of
+        consecutive resumed tasks (e.g. ``A → B(resumed) → C(resumed) → D``)
+        are handled correctly without ad-hoc nested loops.
+
+        Args:
+            task_id: ID of the task whose indegree just reached 0.
+            results: Accumulated results dict (mutated in place).
+            future_to_task: Live Future→Task mapping for the main loop.
+            pending: Set of in-flight futures (mutated when a new future is
+                submitted).
+        """
+        task = self._tasks_by_id[task_id]
+
+        if task_id in self._resumed_task_ids:
+            # Task already completed in a prior run — mark resumed and unlock
+            # its downstreams recursively without submitting to the executor.
+            results[task_id] = self._make_resumed(task)
+            for downstream_id in self._reverse_deps[task_id]:
+                self._indegree[downstream_id] -= 1
+                if self._indegree[downstream_id] == 0:
+                    self._unlock_task(downstream_id, results, future_to_task, pending)
+        elif self._should_skip(task, results):
+            results[task_id] = self._make_skipped(task)
+            self._propagate_skip(task, results)
+        else:
+            new_future: Future[TaskResult] = self._executor.submit(
+                self._execute_fn, task
+            )
+            future_to_task[new_future] = task
+            pending.add(new_future)
+
     def run(self) -> tuple[TaskResult, ...]:
         """Execute all tasks respecting dependency order.
 
@@ -1112,7 +1162,8 @@ class _DependencyScheduler:
                     for downstream_id in self._reverse_deps[task.id]:
                         self._indegree[downstream_id] -= 1
 
-        # Submit all tasks that have no dependencies.
+        # Submit all tasks that have no dependencies (or those whose indegree
+        # was reduced to 0 during the pre-populate phase above).
         pending: set[Future[TaskResult]] = set()
         for task in self._tasks:
             if task.id in results:
@@ -1153,41 +1204,14 @@ class _DependencyScheduler:
 
                 results[task.id] = task_result
 
-                # Unlock downstream tasks.
+                # Unlock downstream tasks using the centralised helper so that
+                # chains of consecutive resumed tasks are handled correctly.
                 for downstream_id in self._reverse_deps[task.id]:
                     self._indegree[downstream_id] -= 1
                     if self._indegree[downstream_id] == 0:
-                        downstream_task = self._tasks_by_id[downstream_id]
-                        # If the downstream task was resumed in a prior run but
-                        # could not be pre-populated (because its upstream was
-                        # not yet resolved), resolve it now and continue
-                        # propagating without submitting it for execution.
-                        if downstream_task.id in self._resumed_task_ids:
-                            results[downstream_id] = self._make_resumed(downstream_task)
-                            # Recursively unlock the resumed task's own downstreams.
-                            for further_id in self._reverse_deps[downstream_id]:
-                                self._indegree[further_id] -= 1
-                                if self._indegree[further_id] == 0:
-                                    further_task = self._tasks_by_id[further_id]
-                                    if self._should_skip(further_task, results):
-                                        results[further_id] = self._make_skipped(further_task)
-                                        self._propagate_skip(further_task, results)
-                                    elif further_task.id not in results:
-                                        new_future_r: Future[TaskResult] = self._executor.submit(
-                                            self._execute_fn, further_task
-                                        )
-                                        future_to_task[new_future_r] = further_task
-                                        pending.add(new_future_r)
-                        elif self._should_skip(downstream_task, results):
-                            results[downstream_id] = self._make_skipped(downstream_task)
-                            # Propagate skip to further downstream tasks.
-                            self._propagate_skip(downstream_task, results)
-                        else:
-                            new_future: Future[TaskResult] = self._executor.submit(
-                                self._execute_fn, downstream_task
-                            )
-                            future_to_task[new_future] = downstream_task
-                            pending.add(new_future)
+                        self._unlock_task(
+                            downstream_id, results, future_to_task, pending
+                        )
 
         if runner_error is not None:
             raise runner_error
@@ -1383,11 +1407,9 @@ def run_manifest(
             # For the "file not found" case no message was printed yet, so
             # emit one here.
             if not state_file_exists(manifest_path):
-                from .run_state import _state_file_path  # for display only
-
                 print(
                     "Warning: --resume: no state file found"
-                    f" ({_state_file_path(manifest_path)})."
+                    f" ({state_file_path(manifest_path)})."
                     " Starting a normal run.",
                     file=sys.stderr,
                 )

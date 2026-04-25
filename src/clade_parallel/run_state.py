@@ -182,13 +182,27 @@ def create_run_state(manifest_path: Path) -> RunState:
     return state
 
 
+def state_file_path(manifest_path: Path) -> Path:
+    """Return the canonical path of the state file for *manifest_path*.
+
+    Public wrapper around the internal _state_file_path helper.
+
+    Args:
+        manifest_path: Absolute path to the manifest file.
+
+    Returns:
+        Path to the ``.clade-run-state-<stem>.json`` file.
+    """
+    return _state_file_path(manifest_path)
+
+
 def mark_task_completed(state: RunState, task_id: str, manifest_path: Path) -> None:
     """Record *task_id* as completed and persist the updated state.
 
     This function mutates *state* in-place (adds *task_id* to
     ``completed_tasks`` and updates ``updated_at``), then writes the state
-    file.  I/O errors are silently suppressed so that a persistence failure
-    never affects task execution.
+    file.  I/O errors are caught and a warning is emitted to stderr, but task
+    execution continues unaffected.
 
     Args:
         state: The RunState to update.
