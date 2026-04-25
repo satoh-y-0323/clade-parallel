@@ -1098,6 +1098,12 @@ class _DependencyScheduler:
         consecutive resumed tasks (e.g. ``A → B(resumed) → C(resumed) → D``)
         are handled correctly without ad-hoc nested loops.
 
+        .. note::
+            Recursion depth equals the length of consecutive resumed chains.
+            Typical manifests have O(10) tasks so stack overflow is not a
+            concern in practice; if extremely long chains become a use case,
+            convert to an iterative queue.
+
         Args:
             task_id: ID of the task whose indegree just reached 0.
             results: Accumulated results dict (mutated in place).

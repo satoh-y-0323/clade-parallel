@@ -185,7 +185,8 @@ def create_run_state(manifest_path: Path) -> RunState:
 def state_file_path(manifest_path: Path) -> Path:
     """Return the canonical path of the state file for *manifest_path*.
 
-    Public wrapper around the internal _state_file_path helper.
+    This public helper avoids callers having to import the private
+    ``_state_file_path`` function.
 
     Args:
         manifest_path: Absolute path to the manifest file.
