@@ -30,6 +30,7 @@ from .run_state import (
     delete_run_state,
     load_run_state,
     mark_task_completed,
+    state_file_exists,
 )
 
 # ---------------------------------------------------------------------------
@@ -1096,15 +1097,20 @@ class _DependencyScheduler:
         runner_error: RunnerError | None = None
 
         # Pre-populate results for tasks already completed in a prior run.
-        # We process them in manifest declaration order so that indegree
-        # accounting is propagated deterministically.
+        # Only resumed tasks whose every dependency is already resolved are
+        # immediately unlocked here.  Resumed tasks that still have un-resolved
+        # upstream tasks are left with their original indegree so that they are
+        # handled correctly when the upstream completes (see unlock loop below).
+        # Processing in manifest declaration order guarantees deterministic
+        # propagation when multiple resumed tasks form a chain.
         for task in self._tasks:
             if task.id in self._resumed_task_ids:
-                results[task.id] = self._make_resumed(task)
-                # Decrement indegree for downstream tasks, exactly as if the
-                # task had completed normally.
-                for downstream_id in self._reverse_deps[task.id]:
-                    self._indegree[downstream_id] -= 1
+                if all(dep in results for dep in task.depends_on):
+                    # All deps already resolved → mark resumed now and decrement
+                    # downstream indegrees.
+                    results[task.id] = self._make_resumed(task)
+                    for downstream_id in self._reverse_deps[task.id]:
+                        self._indegree[downstream_id] -= 1
 
         # Submit all tasks that have no dependencies.
         pending: set[Future[TaskResult]] = set()
@@ -1152,7 +1158,27 @@ class _DependencyScheduler:
                     self._indegree[downstream_id] -= 1
                     if self._indegree[downstream_id] == 0:
                         downstream_task = self._tasks_by_id[downstream_id]
-                        if self._should_skip(downstream_task, results):
+                        # If the downstream task was resumed in a prior run but
+                        # could not be pre-populated (because its upstream was
+                        # not yet resolved), resolve it now and continue
+                        # propagating without submitting it for execution.
+                        if downstream_task.id in self._resumed_task_ids:
+                            results[downstream_id] = self._make_resumed(downstream_task)
+                            # Recursively unlock the resumed task's own downstreams.
+                            for further_id in self._reverse_deps[downstream_id]:
+                                self._indegree[further_id] -= 1
+                                if self._indegree[further_id] == 0:
+                                    further_task = self._tasks_by_id[further_id]
+                                    if self._should_skip(further_task, results):
+                                        results[further_id] = self._make_skipped(further_task)
+                                        self._propagate_skip(further_task, results)
+                                    elif further_task.id not in results:
+                                        new_future_r: Future[TaskResult] = self._executor.submit(
+                                            self._execute_fn, further_task
+                                        )
+                                        future_to_task[new_future_r] = further_task
+                                        pending.add(new_future_r)
+                        elif self._should_skip(downstream_task, results):
                             results[downstream_id] = self._make_skipped(downstream_task)
                             # Propagate skip to further downstream tasks.
                             self._propagate_skip(downstream_task, results)
@@ -1356,9 +1382,9 @@ def run_manifest(
             # exist, the JSON is malformed, or the manifest hash mismatched.
             # For the "file not found" case no message was printed yet, so
             # emit one here.
-            from .run_state import _state_file_path  # local import to avoid circular
+            if not state_file_exists(manifest_path):
+                from .run_state import _state_file_path  # for display only
 
-            if not _state_file_path(manifest_path).exists():
                 print(
                     "Warning: --resume: no state file found"
                     f" ({_state_file_path(manifest_path)})."

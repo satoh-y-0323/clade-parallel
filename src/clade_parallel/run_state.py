@@ -9,16 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-STATE_FILENAME: str = ".clade-run-state.json"
 
 # ---------------------------------------------------------------------------
 # Data class
@@ -76,14 +71,18 @@ def _state_file_path(manifest_path: Path) -> Path:
     """Return the canonical path of the state file for *manifest_path*.
 
     The state file is placed in the same directory as the manifest.
+    The filename incorporates the manifest stem to avoid collisions when
+    multiple manifests reside in the same directory.
 
     Args:
         manifest_path: Absolute path to the manifest file.
 
     Returns:
-        Path to the ``.clade-run-state.json`` file.
+        Path to the ``.clade-run-state-<stem>.json`` file, for example
+        ``.clade-run-state-manifest.json`` for ``manifest.md``.
     """
-    return manifest_path.parent / STATE_FILENAME
+    stem = manifest_path.stem  # e.g. "manifest" → ".clade-run-state-manifest.json"
+    return manifest_path.parent / f".clade-run-state-{stem}.json"
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +119,14 @@ def load_run_state(manifest_path: Path) -> RunState | None:
         print(
             f"Warning: --resume: failed to parse state file {state_path}: {exc}."
             " Falling back to normal run.",
+            file=sys.stderr,
+        )
+        return None
+
+    if not isinstance(raw, dict):
+        print(
+            f"Warning: --resume: state file {state_path} is malformed: "
+            "expected a JSON object at top level. Falling back to normal run.",
             file=sys.stderr,
         )
         return None
@@ -209,11 +216,28 @@ def delete_run_state(manifest_path: Path) -> None:
         pass
 
 
-def _persist(state: RunState, manifest_path: Path) -> None:
-    """Serialise *state* to JSON and write it to disk.
+def state_file_exists(manifest_path: Path) -> bool:
+    """Return True if the state file for *manifest_path* exists on disk.
 
-    I/O errors are silently suppressed so that a persistence failure never
-    affects task execution.
+    This public helper avoids callers having to import the private
+    ``_state_file_path`` function.
+
+    Args:
+        manifest_path: Absolute path to the manifest file.
+
+    Returns:
+        True if the corresponding state file exists on disk.
+    """
+    return _state_file_path(manifest_path).exists()
+
+
+def _persist(state: RunState, manifest_path: Path) -> None:
+    """Serialise *state* to JSON and write it to disk atomically.
+
+    Uses a write-then-rename pattern so that the state file is never left in
+    a partially-written state.  I/O errors are caught and a warning is emitted
+    to stderr so that the user knows ``--resume`` may not work for the next run,
+    but task execution is never interrupted.
 
     Args:
         state: The RunState to serialise.
@@ -227,10 +251,20 @@ def _persist(state: RunState, manifest_path: Path) -> None:
         "created_at": state.created_at,
         "updated_at": state.updated_at,
     }
+    tmp_path = state_path.with_suffix(".tmp")
     try:
-        state_path.write_text(
+        tmp_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    except OSError:
-        pass
+        os.replace(tmp_path, state_path)
+    except OSError as exc:
+        print(
+            f"Warning: run-state: failed to persist state to {state_path}: {exc}."
+            " --resume will not be able to skip this task on the next run.",
+            file=sys.stderr,
+        )
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass

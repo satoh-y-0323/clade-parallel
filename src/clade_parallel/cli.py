@@ -118,7 +118,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Skip tasks that already succeeded in a previous run by loading"
-            " the .clade-run-state.json file next to the manifest."
+            " the .clade-run-state-<manifest-stem>.json file next to the manifest."
             " If the state file is missing or the manifest has changed,"
             " a warning is emitted and all tasks are run normally."
         ),
@@ -134,8 +134,10 @@ def _status_label(result: TaskResult) -> str:
         result: The TaskResult to classify.
 
     Returns:
-        One of ``"ok"``, ``"fail"``, or ``"timeout"``.
+        One of ``"skip"``, ``"ok"``, ``"fail"``, or ``"timeout"``.
     """
+    if result.resumed:
+        return "skip"
     if result.timed_out:
         return "timeout"
     if result.returncode == 0:
