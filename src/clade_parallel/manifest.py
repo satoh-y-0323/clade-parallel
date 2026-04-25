@@ -239,8 +239,7 @@ def _parse_non_negative_float(raw: object, task_id: str, field_name: str) -> flo
         ) from exc
     if value < 0.0:
         raise ManifestError(
-            f"Task '{task_id}': '{field_name}' must be >= 0.0,"
-            f" got {value!r}."
+            f"Task '{task_id}': '{field_name}' must be >= 0.0," f" got {value!r}."
         )
     if value > MAX_RETRY_DELAY_SEC:
         raise ManifestError(
@@ -277,8 +276,7 @@ def _parse_backoff_factor(raw: object, task_id: str, field_name: str) -> float:
         ) from exc
     if value < 1.0:
         raise ManifestError(
-            f"Task '{task_id}': '{field_name}' must be >= 1.0,"
-            f" got {value!r}."
+            f"Task '{task_id}': '{field_name}' must be >= 1.0," f" got {value!r}."
         )
     if value > MAX_RETRY_BACKOFF_FACTOR:
         raise ManifestError(

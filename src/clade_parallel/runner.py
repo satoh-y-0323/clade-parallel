@@ -369,7 +369,7 @@ def _execute_with_retry(
             return _with_retry_info(result, retry_count=attempt, category=category)
 
         # Retry with optional exponential backoff delay.
-        delay: float = task.retry_delay_sec * (task.retry_backoff_factor ** attempt)
+        delay: float = task.retry_delay_sec * (task.retry_backoff_factor**attempt)
         delay = min(delay, _MAX_RETRY_DELAY_SEC)
         if delay > 0:
             time.sleep(delay)

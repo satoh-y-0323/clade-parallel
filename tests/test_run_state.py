@@ -182,7 +182,11 @@ def test_load_run_state_returns_none_on_missing_field(
     captured = capsys.readouterr()
 
     assert result is None
-    assert "Warning" in captured.err or "malformed" in captured.err or "Falling back" in captured.err
+    assert (
+        "Warning" in captured.err
+        or "malformed" in captured.err
+        or "Falling back" in captured.err
+    )
 
 
 def test_load_run_state_returns_none_on_non_dict_json(
@@ -274,7 +278,9 @@ def test_delete_run_state_noop_when_absent(tmp_path: Path) -> None:
     try:
         delete_run_state(manifest_path)
     except Exception as exc:
-        pytest.fail(f"delete_run_state must not raise when file is absent, but raised: {exc!r}")
+        pytest.fail(
+            f"delete_run_state must not raise when file is absent, but raised: {exc!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

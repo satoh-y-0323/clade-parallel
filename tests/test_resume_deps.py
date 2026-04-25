@@ -90,9 +90,9 @@ def test_resume_dep_chain_A_not_resumed_B_resumed_C_not_before_A() -> None:
             a_done_event.set()
         elif task.id == "task-c":
             # C must only run after A is done.
-            assert a_done_event.is_set(), (
-                "task-c started before task-a finished — dependency violation!"
-            )
+            assert (
+                a_done_event.is_set()
+            ), "task-c started before task-a finished — dependency violation!"
         return _make_ok_result(task)
 
     # B is resumed; A and C are not.
@@ -107,9 +107,9 @@ def test_resume_dep_chain_A_not_resumed_B_resumed_C_not_before_A() -> None:
     # Verify execution order: A must come before C.
     assert "task-a" in execution_order, "task-a was never executed"
     assert "task-c" in execution_order, "task-c was never executed"
-    assert execution_order.index("task-a") < execution_order.index("task-c"), (
-        f"Expected task-a before task-c, but got order: {execution_order}"
-    )
+    assert execution_order.index("task-a") < execution_order.index(
+        "task-c"
+    ), f"Expected task-a before task-c, but got order: {execution_order}"
 
     # All results must be ok.
     results_by_id = {r.task_id: r for r in results}
@@ -140,7 +140,9 @@ def test_resume_dep_chain_all_resumed_no_execution() -> None:
         )
         results = scheduler.run()
 
-    assert executed == [], f"No tasks should run when all are resumed, but got: {executed}"
+    assert (
+        executed == []
+    ), f"No tasks should run when all are resumed, but got: {executed}"
     for r in results:
         assert r.resumed is True
         assert r.ok is True
@@ -173,9 +175,9 @@ def test_resume_dep_chain_A_resumed_B_not_C_not() -> None:
     assert "task-a" not in execution_order, "task-a should be skipped (resumed)"
     assert "task-b" in execution_order
     assert "task-c" in execution_order
-    assert execution_order.index("task-b") < execution_order.index("task-c"), (
-        f"Expected task-b before task-c, but got: {execution_order}"
-    )
+    assert execution_order.index("task-b") < execution_order.index(
+        "task-c"
+    ), f"Expected task-b before task-c, but got: {execution_order}"
 
     results_by_id = {r.task_id: r for r in results}
     assert results_by_id["task-a"].resumed is True
@@ -202,9 +204,9 @@ def test_resume_dep_chain_A_not_resumed_B_resumed_C_resumed_D_executes() -> None
             time.sleep(0.05)
             a_done_event.set()
         elif task.id == "task-d":
-            assert a_done_event.is_set(), (
-                "task-d started before task-a finished — dependency violation!"
-            )
+            assert (
+                a_done_event.is_set()
+            ), "task-d started before task-a finished — dependency violation!"
         return _make_ok_result(task)
 
     # B and C are resumed; A and D are not.
@@ -223,9 +225,9 @@ def test_resume_dep_chain_A_not_resumed_B_resumed_C_resumed_D_executes() -> None
     # A and D must be executed in order.
     assert "task-a" in execution_order, "task-a was never executed"
     assert "task-d" in execution_order, "task-d was never executed"
-    assert execution_order.index("task-a") < execution_order.index("task-d"), (
-        f"Expected task-a before task-d, but got order: {execution_order}"
-    )
+    assert execution_order.index("task-a") < execution_order.index(
+        "task-d"
+    ), f"Expected task-a before task-d, but got order: {execution_order}"
 
     results_by_id = {r.task_id: r for r in results}
     assert results_by_id["task-a"].ok is True
@@ -257,8 +259,10 @@ def test_resume_dep_chain_no_resumed_normal_order() -> None:
         )
         results = scheduler.run()
 
-    assert execution_order == ["task-a", "task-b", "task-c"], (
-        f"Expected [task-a, task-b, task-c], got: {execution_order}"
-    )
+    assert execution_order == [
+        "task-a",
+        "task-b",
+        "task-c",
+    ], f"Expected [task-a, task-b, task-c], got: {execution_order}"
     for r in results:
         assert r.ok is True

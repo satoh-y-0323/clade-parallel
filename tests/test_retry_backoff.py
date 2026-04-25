@@ -85,9 +85,9 @@ class TestClassifyFailureRateLimited:
 
         classify = getattr(runner_module, "_classify_failure")
         result = classify(1, "Error: rate limit exceeded, try again later")
-        assert result == "rate_limited", (
-            f"Expected 'rate_limited' for 'rate limit' stderr, got {result!r}"
-        )
+        assert (
+            result == "rate_limited"
+        ), f"Expected 'rate_limited' for 'rate limit' stderr, got {result!r}"
 
     def test_rate_limit_case_insensitive(self):
         """'RATE LIMIT' (uppercase) in stderr → 'rate_limited'."""
@@ -95,9 +95,9 @@ class TestClassifyFailureRateLimited:
 
         classify = getattr(runner_module, "_classify_failure")
         result = classify(1, "RATE LIMIT exceeded")
-        assert result == "rate_limited", (
-            f"Expected 'rate_limited' for uppercase 'RATE LIMIT', got {result!r}"
-        )
+        assert (
+            result == "rate_limited"
+        ), f"Expected 'rate_limited' for uppercase 'RATE LIMIT', got {result!r}"
 
     def test_rate_limit_with_underscore(self):
         """'rate_limit' (underscore separator) in stderr → 'rate_limited'."""
@@ -105,9 +105,9 @@ class TestClassifyFailureRateLimited:
 
         classify = getattr(runner_module, "_classify_failure")
         result = classify(1, "rate_limit hit for this API key")
-        assert result == "rate_limited", (
-            f"Expected 'rate_limited' for 'rate_limit' stderr, got {result!r}"
-        )
+        assert (
+            result == "rate_limited"
+        ), f"Expected 'rate_limited' for 'rate_limit' stderr, got {result!r}"
 
     def test_quota_exceeded_returns_rate_limited(self):
         """'quota exceeded' in stderr → 'rate_limited'."""
@@ -115,9 +115,9 @@ class TestClassifyFailureRateLimited:
 
         classify = getattr(runner_module, "_classify_failure")
         result = classify(1, "quota exceeded for this billing period")
-        assert result == "rate_limited", (
-            f"Expected 'rate_limited' for 'quota exceeded' stderr, got {result!r}"
-        )
+        assert (
+            result == "rate_limited"
+        ), f"Expected 'rate_limited' for 'quota exceeded' stderr, got {result!r}"
 
     def test_quota_exhausted_returns_rate_limited(self):
         """'quota exhausted' in stderr → 'rate_limited'."""
@@ -125,9 +125,9 @@ class TestClassifyFailureRateLimited:
 
         classify = getattr(runner_module, "_classify_failure")
         result = classify(1, "quota exhausted, please wait")
-        assert result == "rate_limited", (
-            f"Expected 'rate_limited' for 'quota exhausted' stderr, got {result!r}"
-        )
+        assert (
+            result == "rate_limited"
+        ), f"Expected 'rate_limited' for 'quota exhausted' stderr, got {result!r}"
 
     def test_quota_exceeded_case_insensitive(self):
         """'QUOTA EXCEEDED' (uppercase) in stderr → 'rate_limited'."""
@@ -135,9 +135,9 @@ class TestClassifyFailureRateLimited:
 
         classify = getattr(runner_module, "_classify_failure")
         result = classify(1, "QUOTA EXCEEDED - billing limit reached")
-        assert result == "rate_limited", (
-            f"Expected 'rate_limited' for uppercase 'QUOTA EXCEEDED', got {result!r}"
-        )
+        assert (
+            result == "rate_limited"
+        ), f"Expected 'rate_limited' for uppercase 'QUOTA EXCEEDED', got {result!r}"
 
     def test_rate_limit_takes_precedence_over_transient(self):
         """rate_limited is returned (not transient) when pattern matches."""
@@ -146,9 +146,9 @@ class TestClassifyFailureRateLimited:
         classify = getattr(runner_module, "_classify_failure")
         # returncode=1 would normally be transient, but stderr matches rate-limit
         result = classify(1, "You have exceeded the rate limit for this endpoint")
-        assert result == "rate_limited", (
-            f"Expected 'rate_limited' when rate-limit pattern present, got {result!r}"
-        )
+        assert (
+            result == "rate_limited"
+        ), f"Expected 'rate_limited' when rate-limit pattern present, got {result!r}"
 
     def test_permanent_takes_precedence_over_rate_limited(self):
         """permanent returncode (126) wins over rate-limit pattern in stderr."""
@@ -157,9 +157,9 @@ class TestClassifyFailureRateLimited:
         classify = getattr(runner_module, "_classify_failure")
         # returncode 126 = permanent; pattern match comes second
         result = classify(126, "rate limit exceeded")
-        assert result == "permanent", (
-            f"Expected 'permanent' (returncode wins) for returncode=126, got {result!r}"
-        )
+        assert (
+            result == "permanent"
+        ), f"Expected 'permanent' (returncode wins) for returncode=126, got {result!r}"
 
     def test_permanent_stderr_takes_precedence_over_rate_limited(self):
         """permanent stderr pattern wins over rate-limit pattern."""
@@ -168,9 +168,9 @@ class TestClassifyFailureRateLimited:
         classify = getattr(runner_module, "_classify_failure")
         # Both permanent and rate-limit patterns present — permanent wins (checked first)
         result = classify(1, "permission denied and rate limit exceeded")
-        assert result == "permanent", (
-            f"Expected 'permanent' (checked first), got {result!r}"
-        )
+        assert (
+            result == "permanent"
+        ), f"Expected 'permanent' (checked first), got {result!r}"
 
     def test_credit_balance_still_permanent_not_rate_limited(self):
         """'credit balance too low' remains 'permanent', not 'rate_limited'."""
@@ -178,9 +178,9 @@ class TestClassifyFailureRateLimited:
 
         classify = getattr(runner_module, "_classify_failure")
         result = classify(1, "credit balance too low to complete the request")
-        assert result == "permanent", (
-            f"Expected 'permanent' for credit balance stderr, got {result!r}"
-        )
+        assert (
+            result == "permanent"
+        ), f"Expected 'permanent' for credit balance stderr, got {result!r}"
 
     def test_empty_stderr_returncode_1_is_transient(self):
         """Empty stderr with returncode=1 → 'transient' (no pattern matches)."""
@@ -188,9 +188,9 @@ class TestClassifyFailureRateLimited:
 
         classify = getattr(runner_module, "_classify_failure")
         result = classify(1, "")
-        assert result == "transient", (
-            f"Expected 'transient' for empty stderr, got {result!r}"
-        )
+        assert (
+            result == "transient"
+        ), f"Expected 'transient' for empty stderr, got {result!r}"
 
 
 # ===========================================================================
@@ -267,9 +267,9 @@ class TestRateLimitedTaskIsRetried:
         task = _make_task(max_retries=2)
         result = execute_with_retry(task, "claude", git_root=None, log_config=None)
 
-        assert call_count[0] == 3, (
-            f"Expected 3 attempts (initial + 2 retries), got {call_count[0]}"
-        )
+        assert (
+            call_count[0] == 3
+        ), f"Expected 3 attempts (initial + 2 retries), got {call_count[0]}"
         assert result.retry_count == 2
         assert result.failure_category == "rate_limited"
 
@@ -329,12 +329,12 @@ class TestRetryDelaySec:
         task = _make_task(max_retries=1, retry_delay_sec=10.0)
         execute_with_retry(task, "claude", git_root=None, log_config=None)
 
-        assert len(sleep_calls) == 1, (
-            f"Expected time.sleep to be called once, got {len(sleep_calls)} calls"
-        )
-        assert sleep_calls[0] == pytest.approx(10.0), (
-            f"Expected sleep(10.0), got sleep({sleep_calls[0]})"
-        )
+        assert (
+            len(sleep_calls) == 1
+        ), f"Expected time.sleep to be called once, got {len(sleep_calls)} calls"
+        assert sleep_calls[0] == pytest.approx(
+            10.0
+        ), f"Expected sleep(10.0), got sleep({sleep_calls[0]})"
 
     def test_retry_delay_sec_zero_does_not_call_sleep(self, monkeypatch):
         """retry_delay_sec=0.0 (default) does NOT call time.sleep."""
@@ -412,9 +412,9 @@ class TestRetryDelaySec:
         task = _make_task(max_retries=2, retry_delay_sec=10.0)
         execute_with_retry(task, "claude", git_root=None, log_config=None)
 
-        assert len(sleep_calls) == 0, (
-            f"Expected no sleep on permanent failure, got {len(sleep_calls)} sleep calls"
-        )
+        assert (
+            len(sleep_calls) == 0
+        ), f"Expected no sleep on permanent failure, got {len(sleep_calls)} sleep calls"
 
     def test_sleep_not_called_on_timeout(self, monkeypatch):
         """time.sleep is NOT called when the task times out."""
@@ -435,9 +435,9 @@ class TestRetryDelaySec:
         task = _make_task(max_retries=2, retry_delay_sec=10.0)
         execute_with_retry(task, "claude", git_root=None, log_config=None)
 
-        assert len(sleep_calls) == 0, (
-            f"Expected no sleep on timeout failure, got {len(sleep_calls)} sleep calls"
-        )
+        assert (
+            len(sleep_calls) == 0
+        ), f"Expected no sleep on timeout failure, got {len(sleep_calls)} sleep calls"
 
 
 # ===========================================================================
@@ -472,12 +472,12 @@ class TestRetryBackoffFactor:
         # attempt 0 → sleep(10 * 1.0^0 = 10.0)
         # attempt 1 → sleep(10 * 1.0^1 = 10.0)
         assert len(sleep_calls) == 2
-        assert sleep_calls[0] == pytest.approx(10.0), (
-            f"Expected 10.0 for first sleep, got {sleep_calls[0]}"
-        )
-        assert sleep_calls[1] == pytest.approx(10.0), (
-            f"Expected 10.0 for second sleep, got {sleep_calls[1]}"
-        )
+        assert sleep_calls[0] == pytest.approx(
+            10.0
+        ), f"Expected 10.0 for first sleep, got {sleep_calls[0]}"
+        assert sleep_calls[1] == pytest.approx(
+            10.0
+        ), f"Expected 10.0 for second sleep, got {sleep_calls[1]}"
 
     def test_backoff_factor_2_exponential_delay(self, monkeypatch):
         """retry_backoff_factor=2.0 produces exponential delay: 10s, 20s, 40s."""
@@ -504,18 +504,18 @@ class TestRetryBackoffFactor:
         # attempt 1 → sleep(10 * 2^1 = 20.0)
         # attempt 2 → sleep(10 * 2^2 = 40.0)
         # attempt 3 = max_retries → no sleep (last attempt)
-        assert len(sleep_calls) == 3, (
-            f"Expected 3 sleeps for max_retries=3, got {len(sleep_calls)}"
-        )
-        assert sleep_calls[0] == pytest.approx(10.0), (
-            f"Expected 10.0 (attempt 0), got {sleep_calls[0]}"
-        )
-        assert sleep_calls[1] == pytest.approx(20.0), (
-            f"Expected 20.0 (attempt 1), got {sleep_calls[1]}"
-        )
-        assert sleep_calls[2] == pytest.approx(40.0), (
-            f"Expected 40.0 (attempt 2), got {sleep_calls[2]}"
-        )
+        assert (
+            len(sleep_calls) == 3
+        ), f"Expected 3 sleeps for max_retries=3, got {len(sleep_calls)}"
+        assert sleep_calls[0] == pytest.approx(
+            10.0
+        ), f"Expected 10.0 (attempt 0), got {sleep_calls[0]}"
+        assert sleep_calls[1] == pytest.approx(
+            20.0
+        ), f"Expected 20.0 (attempt 1), got {sleep_calls[1]}"
+        assert sleep_calls[2] == pytest.approx(
+            40.0
+        ), f"Expected 40.0 (attempt 2), got {sleep_calls[2]}"
 
     def test_backoff_factor_15_exponential_delay(self, monkeypatch):
         """retry_backoff_factor=1.5 produces exponential delay: 5s, 7.5s."""
@@ -540,15 +540,15 @@ class TestRetryBackoffFactor:
 
         # attempt 0 → sleep(5 * 1.5^0 = 5.0)
         # attempt 1 → sleep(5 * 1.5^1 = 7.5)
-        assert len(sleep_calls) == 2, (
-            f"Expected 2 sleeps for max_retries=2, got {len(sleep_calls)}"
-        )
-        assert sleep_calls[0] == pytest.approx(5.0), (
-            f"Expected 5.0 (attempt 0), got {sleep_calls[0]}"
-        )
-        assert sleep_calls[1] == pytest.approx(7.5), (
-            f"Expected 7.5 (attempt 1), got {sleep_calls[1]}"
-        )
+        assert (
+            len(sleep_calls) == 2
+        ), f"Expected 2 sleeps for max_retries=2, got {len(sleep_calls)}"
+        assert sleep_calls[0] == pytest.approx(
+            5.0
+        ), f"Expected 5.0 (attempt 0), got {sleep_calls[0]}"
+        assert sleep_calls[1] == pytest.approx(
+            7.5
+        ), f"Expected 7.5 (attempt 1), got {sleep_calls[1]}"
 
     def test_delay_formula_delay_is_base_times_factor_pow_attempt(self, monkeypatch):
         """Verify delay = retry_delay_sec * (retry_backoff_factor ** attempt) formula."""
@@ -579,13 +579,13 @@ class TestRetryBackoffFactor:
 
         # Expected: delay[i] = base * factor^i for i in range(max_retries)
         expected = [base * (factor**i) for i in range(max_retries)]
-        assert len(sleep_calls) == len(expected), (
-            f"Expected {len(expected)} sleep calls, got {len(sleep_calls)}"
-        )
+        assert len(sleep_calls) == len(
+            expected
+        ), f"Expected {len(expected)} sleep calls, got {len(sleep_calls)}"
         for i, (actual, exp) in enumerate(zip(sleep_calls, expected)):
-            assert actual == pytest.approx(exp), (
-                f"Attempt {i}: expected delay={exp}, got {actual}"
-            )
+            assert actual == pytest.approx(
+                exp
+            ), f"Attempt {i}: expected delay={exp}, got {actual}"
 
     def test_backoff_with_rate_limited_failure(self, monkeypatch):
         """Exponential backoff also applies when retrying rate_limited failures."""
@@ -613,9 +613,9 @@ class TestRetryBackoffFactor:
         # Succeeds on 3rd attempt (call_count=3), so 2 sleeps:
         # attempt 0 → sleep(60 * 2^0 = 60.0)
         # attempt 1 → sleep(60 * 2^1 = 120.0)
-        assert len(sleep_calls) == 2, (
-            f"Expected 2 sleeps before success on 3rd attempt, got {len(sleep_calls)}"
-        )
+        assert (
+            len(sleep_calls) == 2
+        ), f"Expected 2 sleeps before success on 3rd attempt, got {len(sleep_calls)}"
         assert sleep_calls[0] == pytest.approx(60.0)
         assert sleep_calls[1] == pytest.approx(120.0)
 
