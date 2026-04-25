@@ -55,6 +55,7 @@ _STARTUP_DISPLAY_SEC = 60
 _LAST_LINES_ON_TIMEOUT = 20
 
 _PERMANENT_RETURNCODES: frozenset[int] = frozenset({2, 126, 127})
+_MAX_RETRY_DELAY_SEC: float = 3600.0  # 1時間を上限とする
 
 # Permanent failures — never retry regardless of max_retries setting.
 _PERMANENT_STDERR_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -118,9 +119,10 @@ class TaskResult:
         timeout_reason: Whether timeout was due to total or idle limit; None if
             no timeout.
         retry_count: Number of retries attempted (0 = succeeded or failed on first try).
-        failure_category: Classification of failure reason. "none" on success, "timeout"
-            on timed_out, "permanent" on detected-permanent failure, "transient" on
-            retry-limit exhaustion.
+        failure_category: Classification of failure reason. "none" on success,
+            "timeout" on timed_out, "permanent" on detected-permanent failure
+            (e.g. auth error), "rate_limited" on rate-limit or quota exhaustion,
+            "transient" on other retry-limit exhaustion.
     """
 
     task_id: str
@@ -367,6 +369,7 @@ def _execute_with_retry(
 
         # Retry with optional exponential backoff delay.
         delay: float = task.retry_delay_sec * (task.retry_backoff_factor ** attempt)
+        delay = min(delay, _MAX_RETRY_DELAY_SEC)
         if delay > 0:
             time.sleep(delay)
 

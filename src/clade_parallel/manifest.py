@@ -227,7 +227,7 @@ def _parse_non_negative_float(raw: object, task_id: str, field_name: str) -> flo
             resulting float is negative (``< 0.0``).
     """
     try:
-        value: float = float(raw)  # type: ignore[call-overload]  # float() overloads don't accept `object`
+        value: float = float(raw)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
         raise ManifestError(
             f"Task '{task_id}': '{field_name}' must be a number, got {raw!r}."
@@ -235,6 +235,11 @@ def _parse_non_negative_float(raw: object, task_id: str, field_name: str) -> flo
     if value < 0.0:
         raise ManifestError(
             f"Task '{task_id}': '{field_name}' must be >= 0.0,"
+            f" got {value!r}."
+        )
+    if value > 3600.0:
+        raise ManifestError(
+            f"Task '{task_id}': '{field_name}' must be between 0.0 and 3600.0,"
             f" got {value!r}."
         )
     return value
@@ -260,7 +265,7 @@ def _parse_backoff_factor(raw: object, task_id: str, field_name: str) -> float:
             resulting float is less than 1.0.
     """
     try:
-        value: float = float(raw)  # type: ignore[call-overload]  # float() overloads don't accept `object`
+        value: float = float(raw)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
         raise ManifestError(
             f"Task '{task_id}': '{field_name}' must be a number, got {raw!r}."
@@ -268,6 +273,11 @@ def _parse_backoff_factor(raw: object, task_id: str, field_name: str) -> float:
     if value < 1.0:
         raise ManifestError(
             f"Task '{task_id}': '{field_name}' must be >= 1.0,"
+            f" got {value!r}."
+        )
+    if value > 100.0:
+        raise ManifestError(
+            f"Task '{task_id}': '{field_name}' must be between 1.0 and 100.0,"
             f" got {value!r}."
         )
     return value
