@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import IO, Literal
 
 from ._exceptions import CladeParallelError
-from .manifest import Manifest, Task, load_manifest
+from .manifest import MAX_RETRY_DELAY_SEC, Manifest, Task, load_manifest
 from .run_state import (
     RunState,
     create_run_state,
@@ -55,7 +55,8 @@ _STARTUP_DISPLAY_SEC = 60
 _LAST_LINES_ON_TIMEOUT = 20
 
 _PERMANENT_RETURNCODES: frozenset[int] = frozenset({2, 126, 127})
-_MAX_RETRY_DELAY_SEC: float = 3600.0  # 1時間を上限とする
+# Re-exported from manifest for use in the retry loop; single source of truth.
+_MAX_RETRY_DELAY_SEC: float = MAX_RETRY_DELAY_SEC
 
 # Permanent failures — never retry regardless of max_retries setting.
 _PERMANENT_STDERR_PATTERNS: tuple[re.Pattern[str], ...] = (

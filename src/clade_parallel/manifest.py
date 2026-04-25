@@ -22,6 +22,11 @@ from ._exceptions import CladeParallelError
 
 SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1", "0.2", "0.3", "0.4", "0.5"})
 
+# Upper bounds for retry backoff fields — shared between manifest validation
+# and the runner so both always enforce the same limits.
+MAX_RETRY_DELAY_SEC: float = 3600.0
+MAX_RETRY_BACKOFF_FACTOR: float = 100.0
+
 # Regular expression that defines the set of characters allowed in a task ID.
 # Only alphanumeric characters, hyphens, and underscores are permitted.
 # This prevents path traversal attacks when task.id is used to construct
@@ -237,10 +242,10 @@ def _parse_non_negative_float(raw: object, task_id: str, field_name: str) -> flo
             f"Task '{task_id}': '{field_name}' must be >= 0.0,"
             f" got {value!r}."
         )
-    if value > 3600.0:
+    if value > MAX_RETRY_DELAY_SEC:
         raise ManifestError(
-            f"Task '{task_id}': '{field_name}' must be between 0.0 and 3600.0,"
-            f" got {value!r}."
+            f"Task '{task_id}': '{field_name}' must be between 0.0 and"
+            f" {MAX_RETRY_DELAY_SEC}, got {value!r}."
         )
     return value
 
@@ -275,10 +280,10 @@ def _parse_backoff_factor(raw: object, task_id: str, field_name: str) -> float:
             f"Task '{task_id}': '{field_name}' must be >= 1.0,"
             f" got {value!r}."
         )
-    if value > 100.0:
+    if value > MAX_RETRY_BACKOFF_FACTOR:
         raise ManifestError(
-            f"Task '{task_id}': '{field_name}' must be between 1.0 and 100.0,"
-            f" got {value!r}."
+            f"Task '{task_id}': '{field_name}' must be between 1.0 and"
+            f" {MAX_RETRY_BACKOFF_FACTOR}, got {value!r}."
         )
     return value
 
