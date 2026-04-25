@@ -38,7 +38,7 @@ from .run_state import (
 # Types
 # ---------------------------------------------------------------------------
 
-FailureCategory = Literal["transient", "permanent", "timeout", "none"]
+FailureCategory = Literal["transient", "permanent", "rate_limited", "timeout", "none"]
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -56,12 +56,17 @@ _LAST_LINES_ON_TIMEOUT = 20
 
 _PERMANENT_RETURNCODES: frozenset[int] = frozenset({2, 126, 127})
 
+# Permanent failures — never retry regardless of max_retries setting.
 _PERMANENT_STDERR_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"rate[\s_-]?limit", re.IGNORECASE),
     re.compile(r"\bpermission[\s_-]?denied\b", re.IGNORECASE),
     re.compile(r"authentication[\s_-]?(failed|error)", re.IGNORECASE),
     re.compile(r"invalid[\s_-]?api[\s_-]?key", re.IGNORECASE),
     re.compile(r"credit[\s_-]?balance[\s_-]?(too[\s_-]?low|exceeded)", re.IGNORECASE),
+)
+
+# Rate-limit failures — retryable with backoff when max_retries > 0.
+_RATE_LIMITED_STDERR_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"rate[\s_-]?limit", re.IGNORECASE),
     re.compile(r"quota[\s_-]?(exceeded|exhausted)", re.IGNORECASE),
 )
 
@@ -221,18 +226,29 @@ def _classify_failure(returncode: int | None, stderr: str) -> FailureCategory:
     Pure function: no I/O, no side effects. Called by ``_execute_with_retry``
     after each attempt that did not time out.
 
+    Judgment order:
+    1. Permanent return codes → ``"permanent"``
+    2. Permanent stderr patterns → ``"permanent"``
+    3. Rate-limit stderr patterns → ``"rate_limited"``
+    4. Everything else → ``"transient"``
+
     Args:
         returncode: The process exit code. None is treated as transient.
         stderr: Captured stderr text for pattern matching.
 
     Returns:
-        ``"permanent"`` if any permanent signal is detected, else ``"transient"``.
+        ``"permanent"`` if any permanent signal is detected,
+        ``"rate_limited"`` if a rate-limit pattern is matched,
+        else ``"transient"``.
     """
     if returncode is not None and returncode in _PERMANENT_RETURNCODES:
         return "permanent"
     for pattern in _PERMANENT_STDERR_PATTERNS:
         if pattern.search(stderr):
             return "permanent"
+    for pattern in _RATE_LIMITED_STDERR_PATTERNS:
+        if pattern.search(stderr):
+            return "rate_limited"
     return "transient"
 
 
@@ -345,8 +361,14 @@ def _execute_with_retry(
         if category == "permanent":
             return _with_retry_info(result, retry_count=attempt, category="permanent")
 
+        # "transient" or "rate_limited" — check if retry budget is exhausted.
         if attempt >= task.max_retries:
-            return _with_retry_info(result, retry_count=attempt, category="transient")
+            return _with_retry_info(result, retry_count=attempt, category=category)
+
+        # Retry with optional exponential backoff delay.
+        delay: float = task.retry_delay_sec * (task.retry_backoff_factor ** attempt)
+        if delay > 0:
+            time.sleep(delay)
 
     # unreachable: loop body always returns; kept to satisfy type checker.
     raise AssertionError("_execute_with_retry: loop exited without returning")
@@ -1314,6 +1336,10 @@ def format_dry_run(manifest: Manifest, *, max_workers: int) -> str:
             parts.append(f"idle={task.idle_timeout_sec}s")
         if task.max_retries > 0:
             parts.append(f"retries={task.max_retries}")
+        if task.retry_delay_sec != 0.0:
+            parts.append(f"retry_delay={task.retry_delay_sec}s")
+        if task.retry_backoff_factor != 1.0:
+            parts.append(f"retry_backoff={task.retry_backoff_factor}")
         if task.read_only:
             parts.append("read_only")
         if task.depends_on:

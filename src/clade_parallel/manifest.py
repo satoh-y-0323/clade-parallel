@@ -20,7 +20,7 @@ from ._exceptions import CladeParallelError
 # Public constants
 # ---------------------------------------------------------------------------
 
-SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1", "0.2", "0.3", "0.4"})
+SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1", "0.2", "0.3", "0.4", "0.5"})
 
 # Regular expression that defines the set of characters allowed in a task ID.
 # Only alphanumeric characters, hyphens, and underscores are permitted.
@@ -87,6 +87,13 @@ class Task:
         max_retries: Maximum number of additional attempts after the first try.
             0 means no retries (default). Transient failures are retried up to
             this count; permanent failures and timeouts are NOT retried. Must be >= 0.
+        retry_delay_sec: Base delay in seconds before the first retry. 0.0 means
+            no delay (default). Combined with retry_backoff_factor for exponential
+            backoff. Must be >= 0.0.
+        retry_backoff_factor: Multiplier applied to the delay for each subsequent
+            retry (exponential backoff). 1.0 means constant delay (default).
+            Must be >= 1.0. The actual delay for attempt N is:
+            retry_delay_sec * (retry_backoff_factor ** attempt).
     """
 
     id: str
@@ -105,6 +112,8 @@ class Task:
     depends_on: tuple[str, ...] = ()
     idle_timeout_sec: int | None = None
     max_retries: int = 0
+    retry_delay_sec: float = 0.0
+    retry_backoff_factor: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -192,6 +201,73 @@ def _parse_non_negative_int(raw: object, task_id: str, field_name: str) -> int:
     if value < 0:
         raise ManifestError(
             f"Task '{task_id}': '{field_name}' must be a non-negative integer,"
+            f" got {value!r}."
+        )
+    return value
+
+
+def _parse_non_negative_float(raw: object, task_id: str, field_name: str) -> float:
+    """Parse *raw* as a non-negative float for a task field.
+
+    Converts *raw* to ``float`` and verifies that the result is greater than
+    or equal to zero.  Both conversion errors and negative values raise
+    :class:`ManifestError` with the task ID and field name embedded so that
+    callers need not duplicate that context.
+
+    Args:
+        raw: The raw value from YAML (expected to be a float or numeric).
+        task_id: Identifier of the enclosing task (used in error messages).
+        field_name: The YAML field name being parsed (e.g. ``'retry_delay_sec'``).
+
+    Returns:
+        The parsed non-negative float value.
+
+    Raises:
+        ManifestError: If *raw* cannot be converted to ``float``, or if the
+            resulting float is negative (``< 0.0``).
+    """
+    try:
+        value: float = float(raw)  # type: ignore[call-overload]  # float() overloads don't accept `object`
+    except (TypeError, ValueError) as exc:
+        raise ManifestError(
+            f"Task '{task_id}': '{field_name}' must be a number, got {raw!r}."
+        ) from exc
+    if value < 0.0:
+        raise ManifestError(
+            f"Task '{task_id}': '{field_name}' must be >= 0.0,"
+            f" got {value!r}."
+        )
+    return value
+
+
+def _parse_backoff_factor(raw: object, task_id: str, field_name: str) -> float:
+    """Parse *raw* as a backoff factor (float >= 1.0) for a task field.
+
+    Converts *raw* to ``float`` and verifies that the result is greater than
+    or equal to 1.0.  Both conversion errors and values below 1.0 raise
+    :class:`ManifestError`.
+
+    Args:
+        raw: The raw value from YAML (expected to be a float or numeric).
+        task_id: Identifier of the enclosing task (used in error messages).
+        field_name: The YAML field name being parsed (e.g. ``'retry_backoff_factor'``).
+
+    Returns:
+        The parsed float value >= 1.0.
+
+    Raises:
+        ManifestError: If *raw* cannot be converted to ``float``, or if the
+            resulting float is less than 1.0.
+    """
+    try:
+        value: float = float(raw)  # type: ignore[call-overload]  # float() overloads don't accept `object`
+    except (TypeError, ValueError) as exc:
+        raise ManifestError(
+            f"Task '{task_id}': '{field_name}' must be a number, got {raw!r}."
+        ) from exc
+    if value < 1.0:
+        raise ManifestError(
+            f"Task '{task_id}': '{field_name}' must be >= 1.0,"
             f" got {value!r}."
         )
     return value
@@ -393,6 +469,14 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
         raw.get("max_retries", 0), task_id, "max_retries"
     )
 
+    retry_delay_sec: float = _parse_non_negative_float(
+        raw.get("retry_delay_sec", 0.0), task_id, "retry_delay_sec"
+    )
+
+    retry_backoff_factor: float = _parse_backoff_factor(
+        raw.get("retry_backoff_factor", 1.0), task_id, "retry_backoff_factor"
+    )
+
     return Task(
         id=task_id,
         agent=agent,
@@ -405,6 +489,8 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
         depends_on=depends_on,
         idle_timeout_sec=idle_timeout_sec,
         max_retries=max_retries,
+        retry_delay_sec=retry_delay_sec,
+        retry_backoff_factor=retry_backoff_factor,
     )
 
 

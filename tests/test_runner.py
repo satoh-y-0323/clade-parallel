@@ -1657,17 +1657,17 @@ def test_classify_failure_returncode_126はpermanentを返す():
 
 
 # ---------------------------------------------------------------------------
-# T3-2: _classify_failure(1, "rate limit exceeded") → "permanent" (stderr パターンマッチ)
+# T3-2: _classify_failure(1, "rate limit exceeded") → "rate_limited" (stderr パターンマッチ)
 # ---------------------------------------------------------------------------
 
 
-def test_classify_failure_rate_limit_stderrはpermanentを返す():
-    """_classify_failure(1, 'rate limit exceeded') returns 'permanent' (stderr pattern match)."""
+def test_classify_failure_rate_limit_stderrはrate_limitedを返す():
+    """_classify_failure(1, 'rate limit exceeded') returns 'rate_limited' (stderr pattern match)."""
     import clade_parallel.runner as runner_module
 
     classify_failure = getattr(runner_module, "_classify_failure")
     result = classify_failure(1, "rate limit exceeded")
-    assert result == "permanent"
+    assert result == "rate_limited"
 
 
 # ---------------------------------------------------------------------------
