@@ -18,7 +18,6 @@ import pytest
 
 from clade_parallel.manifest import ManifestError, Task, load_manifest
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
