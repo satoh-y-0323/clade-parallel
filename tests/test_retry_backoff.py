@@ -765,6 +765,74 @@ tasks:
         manifest = load_manifest(p)
         assert manifest.tasks[0].retry_backoff_factor == pytest.approx(2.0)
 
+    def test_retry_delay_sec_above_max_raises_manifest_error(self, tmp_path):
+        """retry_delay_sec > 3600.0 raises ManifestError."""
+        content = """\
+---
+clade_plan_version: "0.5"
+name: test
+tasks:
+  - id: t1
+    agent: dev
+    read_only: true
+    retry_delay_sec: 3601.0
+---
+"""
+        p = _make_manifest_file(tmp_path, content)
+        with pytest.raises(ManifestError):
+            load_manifest(p)
+
+    def test_retry_delay_sec_at_max_is_valid(self, tmp_path):
+        """retry_delay_sec = 3600.0 (boundary) is valid."""
+        content = """\
+---
+clade_plan_version: "0.5"
+name: test
+tasks:
+  - id: t1
+    agent: dev
+    read_only: true
+    retry_delay_sec: 3600.0
+---
+"""
+        p = _make_manifest_file(tmp_path, content)
+        manifest = load_manifest(p)
+        assert manifest.tasks[0].retry_delay_sec == pytest.approx(3600.0)
+
+    def test_retry_backoff_factor_above_max_raises_manifest_error(self, tmp_path):
+        """retry_backoff_factor > 100.0 raises ManifestError."""
+        content = """\
+---
+clade_plan_version: "0.5"
+name: test
+tasks:
+  - id: t1
+    agent: dev
+    read_only: true
+    retry_backoff_factor: 100.1
+---
+"""
+        p = _make_manifest_file(tmp_path, content)
+        with pytest.raises(ManifestError):
+            load_manifest(p)
+
+    def test_retry_backoff_factor_at_max_is_valid(self, tmp_path):
+        """retry_backoff_factor = 100.0 (boundary) is valid."""
+        content = """\
+---
+clade_plan_version: "0.5"
+name: test
+tasks:
+  - id: t1
+    agent: dev
+    read_only: true
+    retry_backoff_factor: 100.0
+---
+"""
+        p = _make_manifest_file(tmp_path, content)
+        manifest = load_manifest(p)
+        assert manifest.tasks[0].retry_backoff_factor == pytest.approx(100.0)
+
     def test_retry_delay_sec_integer_is_accepted(self, tmp_path):
         """retry_delay_sec = 5 (integer YAML) is accepted and converted to float."""
         content = """\
