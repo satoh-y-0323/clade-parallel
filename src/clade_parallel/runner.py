@@ -24,6 +24,13 @@ from typing import IO, Literal
 
 from ._exceptions import CladeParallelError
 from .manifest import Manifest, Task, load_manifest
+from .run_state import (
+    RunState,
+    create_run_state,
+    delete_run_state,
+    load_run_state,
+    mark_task_completed,
+)
 
 # ---------------------------------------------------------------------------
 # Types
@@ -117,6 +124,7 @@ class TaskResult:
     timed_out: bool
     duration_sec: float
     skipped: bool = False
+    resumed: bool = False
     branch_name: str | None = None
     timeout_reason: Literal["total", "idle"] | None = None
     retry_count: int = 0
@@ -126,9 +134,15 @@ class TaskResult:
     def ok(self) -> bool:
         """Return True when the task exited successfully with code 0.
 
+        A resumed (skipped-on-resume) task is also considered ok because it
+        succeeded in a previous run.
+
         Returns:
-            True if not skipped, returncode == 0, and the task did not time out.
+            True if resumed, or if not skipped, returncode == 0, and the task
+            did not time out.
         """
+        if self.resumed:
+            return True
         return not self.skipped and self.returncode == 0 and not self.timed_out
 
 
@@ -970,10 +984,14 @@ class _DependencyScheduler:
         tasks: Sequence[Task],
         executor: ThreadPoolExecutor,
         execute_fn: Callable[[Task], TaskResult],
+        *,
+        resumed_task_ids: frozenset[str] | None = None,
     ) -> None:
         self._tasks: Sequence[Task] = tasks
         self._executor: ThreadPoolExecutor = executor
         self._execute_fn: Callable[[Task], TaskResult] = execute_fn
+        # Set of task IDs that were already completed in a prior run.
+        self._resumed_task_ids: frozenset[str] = resumed_task_ids or frozenset()
 
         # Map task_id -> Task for O(1) lookup.
         self._tasks_by_id: dict[str, Task] = {t.id: t for t in tasks}
@@ -1027,6 +1045,31 @@ class _DependencyScheduler:
             branch_name=None,
         )
 
+    def _make_resumed(self, task: Task) -> TaskResult:
+        """Build a synthetic resumed TaskResult for *task*.
+
+        Used when ``--resume`` is active and the task already succeeded in a
+        prior run.  The result is treated as ok (``resumed=True``) so that
+        downstream tasks are unblocked normally.
+
+        Args:
+            task: The task that is being skipped due to prior success.
+
+        Returns:
+            A TaskResult with ``resumed=True`` and ``returncode=0``.
+        """
+        return TaskResult(
+            task_id=task.id,
+            agent=task.agent,
+            returncode=0,
+            stdout="",
+            stderr="",
+            timed_out=False,
+            duration_sec=0.0,
+            resumed=True,
+            branch_name=None,
+        )
+
     # ------------------------------------------------------------------
     # Main loop
     # ------------------------------------------------------------------
@@ -1052,9 +1095,23 @@ class _DependencyScheduler:
         future_to_task: dict[Future[TaskResult], Task] = {}
         runner_error: RunnerError | None = None
 
+        # Pre-populate results for tasks already completed in a prior run.
+        # We process them in manifest declaration order so that indegree
+        # accounting is propagated deterministically.
+        for task in self._tasks:
+            if task.id in self._resumed_task_ids:
+                results[task.id] = self._make_resumed(task)
+                # Decrement indegree for downstream tasks, exactly as if the
+                # task had completed normally.
+                for downstream_id in self._reverse_deps[task.id]:
+                    self._indegree[downstream_id] -= 1
+
         # Submit all tasks that have no dependencies.
         pending: set[Future[TaskResult]] = set()
         for task in self._tasks:
+            if task.id in results:
+                # Already resolved as resumed — skip submission.
+                continue
             if self._indegree[task.id] == 0:
                 future: Future[TaskResult] = self._executor.submit(
                     self._execute_fn, task
@@ -1227,6 +1284,7 @@ def run_manifest(
     claude_executable: str = _DEFAULT_CLAUDE_EXECUTABLE,
     log_dir: Path | None = None,
     log_enabled: bool = True,
+    resume: bool = False,
 ) -> RunResult:
     """Run all tasks in a manifest concurrently using a thread pool.
 
@@ -1239,6 +1297,10 @@ def run_manifest(
         log_dir: Directory for task stdout/stderr log files. When None and
             log_enabled is True, defaults to ``(git_root or cwd) / ".claude" / "logs"``.
         log_enabled: When False, log writing is skipped entirely.
+        resume: When True, load a previously saved run-state file and skip
+            tasks that already completed.  If no state file exists or the
+            manifest has changed (hash mismatch), a warning is emitted and
+            the run proceeds normally.
 
     Returns:
         A RunResult containing a TaskResult for each task in the manifest.
@@ -1279,21 +1341,72 @@ def run_manifest(
     else:
         log_config = None
 
-    # Build execute_fn closure that captures the resolved git_root and log_config.
+    # ------------------------------------------------------------------
+    # Resume / run-state setup
+    # ------------------------------------------------------------------
+    manifest_path = manifest.path
+
+    run_state: RunState | None
+    resumed_task_ids: frozenset[str]
+
+    if resume:
+        loaded = load_run_state(manifest_path)
+        if loaded is None:
+            # load_run_state returns None either because the file does not
+            # exist, the JSON is malformed, or the manifest hash mismatched.
+            # For the "file not found" case no message was printed yet, so
+            # emit one here.
+            from .run_state import _state_file_path  # local import to avoid circular
+
+            if not _state_file_path(manifest_path).exists():
+                print(
+                    "Warning: --resume: no state file found"
+                    f" ({_state_file_path(manifest_path)})."
+                    " Starting a normal run.",
+                    file=sys.stderr,
+                )
+            # Fall back to a fresh run (no tasks skipped).
+            run_state = create_run_state(manifest_path)
+            resumed_task_ids = frozenset()
+        else:
+            run_state = loaded
+            resumed_task_ids = frozenset(loaded.completed_tasks)
+    else:
+        # Normal run: always start fresh, overwriting any existing state.
+        run_state = create_run_state(manifest_path)
+        resumed_task_ids = frozenset()
+
+    # ------------------------------------------------------------------
+    # Build execute_fn with state-file update on success
+    # ------------------------------------------------------------------
     claude_exe = claude_executable
 
     def execute_fn(task: Task) -> TaskResult:
-        return _execute_with_retry(
+        result = _execute_with_retry(
             task, claude_exe, git_root=git_root, log_config=log_config
         )
+        if result.ok and run_state is not None:
+            mark_task_completed(run_state, task.id, manifest_path)
+        return result
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        scheduler = _DependencyScheduler(tasks, executor, execute_fn)
+        scheduler = _DependencyScheduler(
+            tasks, executor, execute_fn, resumed_task_ids=resumed_task_ids
+        )
         task_results: tuple[TaskResult, ...] = scheduler.run()
 
     # Post-processing: merge write-task branches back to the base branch.
+    # Only branches from newly-executed (non-resumed) tasks carry a branch_name.
     merge_results: tuple[MergeResult, ...] = ()
     if has_write_tasks and base_branch is not None:
         merge_results = _merge_write_branches(default_cwd, base_branch, task_results)
 
-    return RunResult(results=task_results, merge_results=merge_results)
+    run_result = RunResult(results=task_results, merge_results=merge_results)
+
+    # Clean up the state file only when every task succeeded (including
+    # resumed ones), so that a subsequent --resume can still be used if
+    # some tasks failed.
+    if run_result.overall_ok:
+        delete_run_state(manifest_path)
+
+    return run_result

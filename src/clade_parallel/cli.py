@@ -113,6 +113,16 @@ def _build_parser() -> argparse.ArgumentParser:
             " — do not share publicly if these are sensitive."
         ),
     )
+    run_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Skip tasks that already succeeded in a previous run by loading"
+            " the .clade-run-state.json file next to the manifest."
+            " If the state file is missing or the manifest has changed,"
+            " a warning is emitted and all tasks are run normally."
+        ),
+    )
 
     return parser
 
@@ -187,13 +197,19 @@ def _print_timeout_tail(result: TaskResult) -> None:
 def _print_summary(run_result: RunResult, *, quiet: bool) -> None:
     """Print per-task summary lines to stdout.
 
-    In quiet mode only failed/timeout tasks are printed.
+    In quiet mode only failed/timeout tasks are printed.  Resumed (skipped
+    via --resume) tasks are always printed regardless of ``quiet`` so that
+    the user can see what was skipped.
 
     Args:
         run_result: The RunResult containing all TaskResult instances.
-        quiet: When True, suppress output for successful tasks.
+        quiet: When True, suppress output for successful non-resumed tasks.
     """
     for result in run_result.results:
+        if result.resumed:
+            # Always print resumed tasks, even in quiet mode.
+            print(f"[skip] {result.task_id} ({result.agent}) resumed")
+            continue
         is_success = result.ok
         if quiet and is_success:
             continue
@@ -255,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
             claude_executable=args.claude_exe,
             log_enabled=not args.no_log,
             log_dir=args.log_dir,
+            resume=args.resume,
         )
     except RunnerError as exc:
         print(f"RunnerError: {exc}", file=sys.stderr)
