@@ -204,7 +204,7 @@ def delete_run_state(manifest_path: Path) -> None:
     """Delete the state file for *manifest_path* on a best-effort basis.
 
     Called after a fully successful run to clean up the state file.
-    Any error is silently swallowed.
+    Any OSError is printed to stderr but otherwise ignored.
 
     Args:
         manifest_path: Absolute path to the manifest file.
@@ -212,8 +212,11 @@ def delete_run_state(manifest_path: Path) -> None:
     state_path = _state_file_path(manifest_path)
     try:
         state_path.unlink(missing_ok=True)
-    except OSError:
-        pass
+    except OSError as exc:
+        print(
+            f"Warning: run-state: failed to delete state file {state_path}: {exc}.",
+            file=sys.stderr,
+        )
 
 
 def state_file_exists(manifest_path: Path) -> bool:
