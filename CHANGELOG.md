@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-25
+
+### Added
+- **`--resume` CLI flag**: Re-run only the tasks that failed or were not yet
+  executed. On each run, successfully completed task IDs are saved to
+  `.clade-run-state-<manifest-stem>.json` next to the manifest. Pass `--resume`
+  on a subsequent invocation to skip those tasks and execute only what remains.
+  The state file is deleted automatically when all tasks succeed.
+  If the manifest has changed (hash mismatch), a warning is emitted and all
+  tasks run normally. Requires no manifest version bump.
+- **`retry_delay_sec` task field** (manifest version `"0.5"`): Fixed or
+  exponentially increasing delay (in seconds) before each retry attempt.
+  Defaults to `0.0` (no delay). Maximum `3600.0` s (1 hour).
+- **`retry_backoff_factor` task field** (manifest version `"0.5"`): Multiplier
+  for exponential backoff. `1.0` = fixed delay; `2.0` = delay doubles each
+  attempt. Delay formula: `retry_delay_sec × (retry_backoff_factor ^ attempt)`,
+  capped at `MAX_RETRY_DELAY_SEC`. Defaults to `1.0`. Maximum `100.0`.
+- **`"rate_limited"` failure category**: `rate limit` and `quota exceeded`
+  errors are now classified as `"rate_limited"` instead of `"permanent"`.
+  They are retried (with backoff) when `max_retries > 0`, unlike `"permanent"`
+  failures (auth errors, invalid API key, credit balance) which are never
+  retried.
+- **`clade_plan_version: "0.5"`**: New manifest version that signals use of
+  `retry_delay_sec` / `retry_backoff_factor`. Versions `"0.1"`–`"0.4"` remain
+  fully supported.
+- **`MAX_RETRY_DELAY_SEC` / `MAX_RETRY_BACKOFF_FACTOR`**: Public constants
+  exported from `clade_parallel.manifest` for use by callers that need to
+  reference the enforcement limits.
+
+### Fixed
+- `_DependencyScheduler`: resumed tasks in deep chains
+  (`A → B(resumed) → C(resumed) → D`) are now resolved correctly at any depth
+  via the new `_unlock_task` helper; previously only one level of consecutive
+  resumed tasks was handled.
+
 ## [0.7.0] - 2026-04-25
 
 ### Added
