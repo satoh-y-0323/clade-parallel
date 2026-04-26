@@ -991,7 +991,7 @@ def _parse_concurrency_limits(raw: object, tasks: tuple[Task, ...]) -> dict[str,
                 f"'concurrency_limits' keys must be non-empty strings, got {group!r}."
             )
         try:
-            limit = int(value)  # type: ignore[call-overload]
+            limit = int(value)
         except (TypeError, ValueError) as exc:
             raise ManifestError(
                 f"'concurrency_limits[{group!r}]' must be a positive integer,"
@@ -999,11 +999,11 @@ def _parse_concurrency_limits(raw: object, tasks: tuple[Task, ...]) -> dict[str,
             ) from exc
         if limit < 1:
             raise ManifestError(
-                f"'concurrency_limits.{group}' must be >= 1, got {limit!r}."
+                f"'concurrency_limits[{group!r}]' must be >= 1, got {limit!r}."
             )
         if limit > MAX_CONCURRENCY_LIMIT:
             raise ManifestError(
-                f"'concurrency_limits.{group}' must be <= {MAX_CONCURRENCY_LIMIT},"
+                f"'concurrency_limits[{group!r}]' must be <= {MAX_CONCURRENCY_LIMIT},"
                 f" got {limit!r}."
             )
         limits[group] = limit
