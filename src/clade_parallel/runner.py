@@ -230,7 +230,7 @@ class _RunState:
 def _send_webhook(
     config: WebhookConfig,
     *,
-    event: str,
+    event: Literal["complete", "failure"],
     manifest_name: str,
     total: int,
     succeeded: int,
@@ -275,7 +275,7 @@ def _send_webhook(
     try:
         with urllib.request.urlopen(req, timeout=_WEBHOOK_TIMEOUT_SEC):
             pass  # response body is intentionally ignored
-    except (urllib.error.URLError, OSError) as exc:
+    except (urllib.error.URLError, OSError, ValueError) as exc:
         print(
             f"Warning: webhook notification failed ({event}): {exc}",
             file=sys.stderr,

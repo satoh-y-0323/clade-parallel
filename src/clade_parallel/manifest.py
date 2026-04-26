@@ -6,11 +6,14 @@ A manifest file is a Markdown file with a YAML frontmatter block delimited by
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 
@@ -28,6 +31,23 @@ SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset(
 # and the runner so both always enforce the same limits.
 MAX_RETRY_DELAY_SEC: float = 3600.0
 MAX_RETRY_BACKOFF_FACTOR: float = 100.0
+
+# Maximum allowed length for a webhook URL (characters).
+_WEBHOOK_URL_MAX_LENGTH: int = 2048
+
+# Known keys for the ``defaults:`` section.  Unrecognised keys are warned.
+_KNOWN_DEFAULTS_KEYS: frozenset[str] = frozenset(
+    {
+        "timeout_sec",
+        "idle_timeout_sec",
+        "max_retries",
+        "retry_delay_sec",
+        "retry_backoff_factor",
+    }
+)
+
+# Known keys for ``on_complete:`` / ``on_failure:`` sections.
+_KNOWN_WEBHOOK_KEYS: frozenset[str] = frozenset({"webhook_url"})
 
 # Regular expression that defines the set of characters allowed in a task ID.
 # Only alphanumeric characters, hyphens, and underscores are permitted.
@@ -185,6 +205,35 @@ class Manifest:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _is_blocked_ip(host: str) -> bool:
+    """Return True when *host* is an IP address literal that should be blocked.
+
+    Only IP address literals (IPv4 and IPv6) are checked.  DNS names are not
+    resolved and therefore pass this check unconditionally — the caller is
+    responsible for ensuring that DNS-name URLs are allowed by policy.
+
+    Blocked ranges:
+    - Loopback (127.x.x.x, ::1)
+    - Link-local (169.254.x.x, fe80::/10)
+    - Private networks (10.x.x.x, 172.16-31.x.x, 192.168.x.x)
+    - Unspecified (0.0.0.0, ::)
+
+    Args:
+        host: The hostname or IP address string extracted from a URL.
+
+    Returns:
+        True if *host* is a blocked IP literal, False otherwise (including
+        when *host* is a DNS name).
+    """
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False  # DNS name — not an IP literal; skip check
+    return (
+        addr.is_loopback or addr.is_link_local or addr.is_private or addr.is_unspecified
+    )
 
 
 def _parse_positive_int(raw: object, task_id: str, field_name: str) -> int:
@@ -387,6 +436,14 @@ def _parse_defaults(raw: object) -> Defaults:
     if not isinstance(raw, dict):
         raise ManifestError(f"'defaults' must be a YAML mapping, got {type(raw)!r}.")
 
+    # Warn about unrecognised keys for forward-compatibility and typo detection.
+    for key in raw:
+        if key not in _KNOWN_DEFAULTS_KEYS:
+            warnings.warn(
+                f"Unknown key {key!r} in 'defaults' section will be ignored.",
+                stacklevel=2,
+            )
+
     # Use a sentinel task_id for error messages in the shared parsers.
     _ctx = "defaults"
 
@@ -446,6 +503,14 @@ def _parse_webhook_config(raw: object, section_name: str) -> WebhookConfig:
             f"'{section_name}' must be a YAML mapping, got {type(raw)!r}."
         )
 
+    # Warn about unrecognised keys for forward-compatibility and typo detection.
+    for key in raw:
+        if key not in _KNOWN_WEBHOOK_KEYS:
+            warnings.warn(
+                f"Unknown key {key!r} in '{section_name}' section will be ignored.",
+                stacklevel=2,
+            )
+
     url = raw.get("webhook_url")
     if url is None:
         raise ManifestError(f"'{section_name}' is missing required key: 'webhook_url'.")
@@ -457,6 +522,27 @@ def _parse_webhook_config(raw: object, section_name: str) -> WebhookConfig:
         raise ManifestError(
             f"'{section_name}.webhook_url' must start with 'http://' or 'https://',"
             f" got {url!r}."
+        )
+
+    # URL length guard: excessively long URLs are likely a mis-configuration or
+    # injection attempt.
+    if len(url) > _WEBHOOK_URL_MAX_LENGTH:
+        raise ManifestError(
+            f"'{section_name}.webhook_url' exceeds the maximum allowed length"
+            f" of {_WEBHOOK_URL_MAX_LENGTH} characters."
+        )
+
+    # SSRF guard: block IP address literals that point to loopback, link-local,
+    # private, or unspecified ranges.  DNS names are not resolved here (resolution
+    # is environment-dependent) and are therefore allowed unconditionally.
+    # Note: http:// is permitted because clade-parallel is a local dev tool and
+    # internal HTTP endpoints are a valid use case.
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if _is_blocked_ip(host):
+        raise ManifestError(
+            f"'{section_name}.webhook_url' points to a blocked address"
+            " (loopback, link-local, private, or unspecified)."
         )
 
     return WebhookConfig(webhook_url=url)
@@ -551,17 +637,17 @@ def _parse_task(
     prompt: str = raw.get("prompt", f"/agent-{agent}")
 
     # Resolve effective defaults: task-level value > manifest defaults > built-in.
-    _builtin_timeout = 900
-    _effective_timeout = (
+    builtin_timeout = 900
+    effective_timeout = (
         raw["timeout_sec"]
         if "timeout_sec" in raw
         else (
             defaults.timeout_sec
             if defaults is not None and defaults.timeout_sec is not None
-            else _builtin_timeout
+            else builtin_timeout
         )
     )
-    timeout_sec: int = _parse_positive_int(_effective_timeout, task_id, "timeout_sec")
+    timeout_sec: int = _parse_positive_int(effective_timeout, task_id, "timeout_sec")
 
     # idle_timeout_sec: task-level > manifest defaults > None (disabled).
     if "idle_timeout_sec" in raw:
@@ -634,7 +720,7 @@ def _parse_task(
     depends_on: tuple[str, ...] = tuple(dict.fromkeys(raw_depends_on))
 
     # max_retries: task-level > manifest defaults > 0 (built-in).
-    _effective_max_retries = (
+    effective_max_retries = (
         raw["max_retries"]
         if "max_retries" in raw
         else (
@@ -644,11 +730,11 @@ def _parse_task(
         )
     )
     max_retries: int = _parse_non_negative_int(
-        _effective_max_retries, task_id, "max_retries"
+        effective_max_retries, task_id, "max_retries"
     )
 
     # retry_delay_sec: task-level > manifest defaults > 0.0 (built-in).
-    _effective_retry_delay = (
+    effective_retry_delay = (
         raw["retry_delay_sec"]
         if "retry_delay_sec" in raw
         else (
@@ -658,11 +744,11 @@ def _parse_task(
         )
     )
     retry_delay_sec: float = _parse_non_negative_float(
-        _effective_retry_delay, task_id, "retry_delay_sec"
+        effective_retry_delay, task_id, "retry_delay_sec"
     )
 
     # retry_backoff_factor: task-level > manifest defaults > 1.0 (built-in).
-    _effective_backoff = (
+    effective_backoff = (
         raw["retry_backoff_factor"]
         if "retry_backoff_factor" in raw
         else (
@@ -672,7 +758,7 @@ def _parse_task(
         )
     )
     retry_backoff_factor: float = _parse_backoff_factor(
-        _effective_backoff, task_id, "retry_backoff_factor"
+        effective_backoff, task_id, "retry_backoff_factor"
     )
 
     return Task(
