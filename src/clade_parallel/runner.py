@@ -22,6 +22,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, Literal
 
@@ -1507,6 +1508,7 @@ def run_manifest(
     log_dir: Path | None = None,
     log_enabled: bool = True,
     resume: bool = False,
+    report_path: Path | None = None,
 ) -> RunResult:
     """Run all tasks in a manifest concurrently using a thread pool.
 
@@ -1523,19 +1525,25 @@ def run_manifest(
             tasks that already completed.  If no state file exists or the
             manifest has changed (hash mismatch), a warning is emitted and
             the run proceeds normally.
+        report_path: When provided, write a JSON or Markdown run summary to
+            this path after all tasks complete.  The format is determined by
+            the file extension (``.json``, ``.md``, or ``.markdown``).
+            The parent directory is created if it does not exist.
+            When None (default), no report is written.
 
     Returns:
         A RunResult containing a TaskResult for each task in the manifest.
 
     Raises:
         RunnerError: If the claude binary cannot be found when executing the
-            first task.
+            first task, or if writing the report fails.
         ManifestError: If a Path/str manifest cannot be loaded.
     """
     if not isinstance(manifest, Manifest):
         manifest = load_manifest(manifest)
 
     _run_start_time = time.perf_counter()
+    _run_started_at: datetime = datetime.now(tz=timezone.utc)
     tasks: Sequence[Task] = manifest.tasks
     workers = max_workers if max_workers is not None else _DEFAULT_MAX_WORKERS
 
@@ -1632,5 +1640,24 @@ def run_manifest(
 
     # Send webhook notifications (best-effort; never raises).
     _dispatch_webhooks(manifest, run_result, run_start_time=_run_start_time)
+
+    # Write run summary report when requested.
+    if report_path is not None:
+        from .report import generate_report  # noqa: PLC0415 (deferred import)
+
+        _run_finished_at = datetime.now(tz=timezone.utc)
+        try:
+            generate_report(
+                run_result,
+                report_path,
+                manifest_name=manifest.name,
+                started_at=_run_started_at,
+                finished_at=_run_finished_at,
+            )
+        except Exception as exc:
+            # Re-raise as RunnerError so the CLI can handle it uniformly.
+            if not isinstance(exc, RunnerError):
+                raise RunnerError(f"Report generation failed: {exc}") from exc
+            raise
 
     return run_result

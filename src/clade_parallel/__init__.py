@@ -10,6 +10,7 @@ from .manifest import (
     WebhookConfig,
     load_manifest,
 )
+from .report import generate_report
 from .runner import RunnerError, RunResult, TaskResult, run_manifest
 
 __version__ = "0.9.0"
@@ -23,6 +24,7 @@ __all__ = [
     "Task",
     "WebhookConfig",
     "load_manifest",
+    "generate_report",
     "RunnerError",
     "RunResult",
     "TaskResult",

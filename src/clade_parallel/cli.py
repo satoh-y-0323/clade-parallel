@@ -123,6 +123,19 @@ def _build_parser() -> argparse.ArgumentParser:
             " a warning is emitted and all tasks are run normally."
         ),
     )
+    run_parser.add_argument(
+        "--report",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write a run summary report to PATH after all tasks complete. "
+            "The format is determined by the file extension: "
+            ".json for JSON, .md or .markdown for Markdown. "
+            "Existing files are overwritten. "
+            "The parent directory is created if it does not exist."
+        ),
+    )
 
     return parser
 
@@ -274,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
             log_enabled=not args.no_log,
             log_dir=args.log_dir,
             resume=args.resume,
+            report_path=args.report,
         )
     except RunnerError as exc:
         print(f"RunnerError: {exc}", file=sys.stderr)

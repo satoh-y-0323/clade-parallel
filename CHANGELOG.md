@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`--report PATH` CLI flag**: Write a JSON or Markdown run summary to a file
+  after all tasks complete. The output format is determined by the file
+  extension: `.json` for JSON, `.md` or `.markdown` for Markdown. Existing
+  files are overwritten; parent directories are created automatically.
+  ```bash
+  # JSON output
+  clade-parallel run manifest.md --report summary.json
+
+  # Markdown output
+  clade-parallel run manifest.md --report summary.md
+  ```
+  The JSON report includes manifest name, start/finish timestamps, duration,
+  per-task status (`succeeded`, `failed`, `skipped`, `resumed`), duration,
+  retry count, and failure category.  The Markdown report renders the same
+  data as a human-readable table.
+- **`generate_report(run_result, report_path, *, manifest_name, ...)` public
+  API** (`src/clade_parallel/report.py`): Programmatic access to the same
+  report generation logic used by the CLI. Added to `__all__`.
+
 ## [0.9.0] - 2026-04-26
 
 ### Added
