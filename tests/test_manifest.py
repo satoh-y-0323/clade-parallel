@@ -12,9 +12,11 @@ import pytest
 
 from clade_parallel.manifest import (
     SUPPORTED_PLAN_VERSIONS,
+    Defaults,
     Manifest,
     ManifestError,
     Task,
+    WebhookConfig,
     load_manifest,
 )
 
@@ -2336,3 +2338,474 @@ tasks:
     path = manifest_file(content)
     result = load_manifest(path)
     assert result.clade_plan_version == "0.4"
+
+
+# ---------------------------------------------------------------------------
+# defaults: セクションのテスト（機能1: グローバルデフォルト値）
+# ---------------------------------------------------------------------------
+
+
+def test_defaults省略時に全タスクへ組み込みデフォルトが適用される(manifest_file):
+    """defaults: omitted — tasks use built-in defaults (timeout=900, max_retries=0 etc.)."""
+    path = manifest_file(MINIMAL_VALID)
+    result = load_manifest(path)
+
+    assert result.defaults is None
+    for task in result.tasks:
+        assert task.timeout_sec == 900
+        assert task.idle_timeout_sec is None
+        assert task.max_retries == 0
+        assert task.retry_delay_sec == 0.0
+        assert task.retry_backoff_factor == 1.0
+
+
+def test_defaults全フィールド指定時に全タスクへ適用される(manifest_file):
+    """defaults: with all fields set — all tasks pick up each value."""
+    content = """---
+clade_plan_version: "0.1"
+name: test
+defaults:
+  timeout_sec: 1800
+  idle_timeout_sec: 120
+  max_retries: 2
+  retry_delay_sec: 5.0
+  retry_backoff_factor: 2.0
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+  - id: security
+    agent: security-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+
+    assert result.defaults is not None
+    assert isinstance(result.defaults, Defaults)
+    # All tasks must inherit every defaults field.
+    for task in result.tasks:
+        assert task.timeout_sec == 1800
+        assert task.idle_timeout_sec == 120
+        assert task.max_retries == 2
+        assert task.retry_delay_sec == 5.0
+        assert task.retry_backoff_factor == 2.0
+
+
+def test_defaults一部フィールドのみ指定時に指定フィールドのみ適用される(manifest_file):
+    """defaults: with only timeout_sec — other fields remain at built-in defaults."""
+    content = """---
+clade_plan_version: "0.1"
+name: test
+defaults:
+  timeout_sec: 600
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+
+    assert result.defaults is not None
+    assert result.defaults.timeout_sec == 600
+    # Specified field is applied.
+    task = result.tasks[0]
+    assert task.timeout_sec == 600
+    # Unspecified fields remain at built-in values.
+    assert task.idle_timeout_sec is None
+    assert task.max_retries == 0
+    assert task.retry_delay_sec == 0.0
+    assert task.retry_backoff_factor == 1.0
+
+
+def test_タスクレベルの値がdefaultsより優先される(manifest_file):
+    """Task-level timeout_sec takes priority over defaults.timeout_sec."""
+    content = """---
+clade_plan_version: "0.1"
+name: test
+defaults:
+  timeout_sec: 600
+  max_retries: 3
+tasks:
+  - id: fast
+    agent: code-reviewer
+    read_only: true
+    timeout_sec: 120
+    max_retries: 0
+  - id: slow
+    agent: security-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+
+    fast_task = next(t for t in result.tasks if t.id == "fast")
+    slow_task = next(t for t in result.tasks if t.id == "slow")
+
+    # Task-level overrides.
+    assert fast_task.timeout_sec == 120
+    assert fast_task.max_retries == 0
+    # Defaults applied to task without task-level values.
+    assert slow_task.timeout_sec == 600
+    assert slow_task.max_retries == 3
+
+
+def test_defaults_timeout_sec_負値でManifestErrorが送出される(manifest_file):
+    """defaults.timeout_sec: -1 raises ManifestError (must be positive)."""
+    content = """---
+clade_plan_version: "0.1"
+name: test
+defaults:
+  timeout_sec: -1
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+def test_defaults_max_retries_負値でManifestErrorが送出される(manifest_file):
+    """defaults.max_retries: -1 raises ManifestError (must be non-negative)."""
+    content = """---
+clade_plan_version: "0.1"
+name: test
+defaults:
+  max_retries: -1
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+def test_defaultsがマッピング以外のときManifestErrorが送出される(manifest_file):
+    """defaults: "invalid" (a string, not a mapping) raises ManifestError."""
+    content = """---
+clade_plan_version: "0.1"
+name: test
+defaults: "invalid"
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+# ---------------------------------------------------------------------------
+# webhook バリデーションのテスト（機能2: Webhook 通知）
+# ---------------------------------------------------------------------------
+
+
+def test_on_complete_https_urlが正常にパースされる(manifest_file):
+    """on_complete.webhook_url starting with 'https://' is parsed without error."""
+    content = """---
+clade_plan_version: "0.1"
+name: test
+on_complete:
+  webhook_url: "https://example.com/hook"
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+
+    assert result.on_complete is not None
+    assert isinstance(result.on_complete, WebhookConfig)
+    assert result.on_complete.webhook_url == "https://example.com/hook"
+
+
+def test_on_complete_http_urlが正常にパースされる(manifest_file):
+    """on_complete.webhook_url starting with 'http://' is parsed without error."""
+    content = """---
+clade_plan_version: "0.1"
+name: test
+on_complete:
+  webhook_url: "http://internal.example.com/hook"
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+
+    assert result.on_complete is not None
+    assert result.on_complete.webhook_url == "http://internal.example.com/hook"
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "ftp://example.com/hook",
+        "ws://example.com/hook",
+        "//example.com/hook",
+        "example.com/hook",
+        "",
+    ],
+    ids=["ftp", "ws", "double_slash", "no_scheme", "empty"],
+)
+def test_on_complete_無効なurlスキームでManifestErrorが送出される(
+    bad_url, manifest_file
+):
+    """on_complete.webhook_url not starting with http:// or https:// raises ManifestError."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "on_complete": {"webhook_url": bad_url},
+        "tasks": [{"id": "review", "agent": "code-reviewer", "read_only": True}],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+def test_on_complete_on_failure省略時にNoneとして扱われる(manifest_file):
+    """on_complete and on_failure omitted — both are None."""
+    path = manifest_file(MINIMAL_VALID)
+    result = load_manifest(path)
+
+    assert result.on_complete is None
+    assert result.on_failure is None
+
+
+def test_on_failure_webhook_urlが正常にパースされる(manifest_file):
+    """on_failure.webhook_url is parsed correctly."""
+    content = """---
+clade_plan_version: "0.1"
+name: test
+on_failure:
+  webhook_url: "https://alerts.example.com/failure"
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+
+    assert result.on_failure is not None
+    assert result.on_failure.webhook_url == "https://alerts.example.com/failure"
+    assert result.on_complete is None
+
+
+def test_on_complete_on_failure両方設定可能(manifest_file):
+    """Both on_complete and on_failure can be set simultaneously."""
+    content = """---
+clade_plan_version: "0.1"
+name: test
+on_complete:
+  webhook_url: "https://example.com/done"
+on_failure:
+  webhook_url: "https://example.com/fail"
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+
+    assert result.on_complete is not None
+    assert result.on_failure is not None
+    assert result.on_complete.webhook_url == "https://example.com/done"
+    assert result.on_failure.webhook_url == "https://example.com/fail"
+
+
+def test_on_completeがマッピング以外のときManifestErrorが送出される(manifest_file):
+    """on_complete: "not-a-mapping" raises ManifestError."""
+    content = """---
+clade_plan_version: "0.1"
+name: test
+on_complete: "not-a-mapping"
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+def test_on_failureがマッピング以外のときManifestErrorが送出される(manifest_file):
+    """on_failure: 123 (an integer, not a mapping) raises ManifestError."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "on_failure": 123,
+        "tasks": [{"id": "review", "agent": "code-reviewer", "read_only": True}],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+# ---------------------------------------------------------------------------
+# SSRF 対策テスト: ブロック対象 IP アドレスリテラルの検証
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "blocked_url,description",
+    [
+        ("http://127.0.0.1/hook", "loopback_ipv4"),
+        ("http://127.1.2.3/hook", "loopback_ipv4_other"),
+        ("https://[::1]/hook", "loopback_ipv6"),
+        ("http://169.254.0.1/hook", "link_local_ipv4_aws_imds"),
+        ("http://169.254.169.254/hook", "link_local_ipv4_imdsv1"),
+        ("http://10.0.0.1/hook", "private_class_a"),
+        ("http://172.16.0.1/hook", "private_class_b_start"),
+        ("http://172.31.255.255/hook", "private_class_b_end"),
+        ("http://192.168.1.1/hook", "private_class_c"),
+        ("http://0.0.0.0/hook", "unspecified_ipv4"),
+    ],
+    ids=[
+        "loopback_ipv4",
+        "loopback_ipv4_other",
+        "loopback_ipv6",
+        "link_local_ipv4_aws_imds",
+        "link_local_ipv4_imdsv1",
+        "private_class_a",
+        "private_class_b_start",
+        "private_class_b_end",
+        "private_class_c",
+        "unspecified_ipv4",
+    ],
+)
+def test_ブロック対象IPのwebhook_urlはManifestErrorが送出される(
+    blocked_url, description, manifest_file
+):
+    """webhook_url pointing to a blocked IP literal raises ManifestError (SSRF prevention)."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "on_complete": {"webhook_url": blocked_url},
+        "tasks": [{"id": "review", "agent": "code-reviewer", "read_only": True}],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r"blocked"):
+        load_manifest(path)
+
+
+@pytest.mark.parametrize(
+    "allowed_url,description",
+    [
+        ("https://example.com/hook", "public_https"),
+        ("http://internal.company.com/hook", "internal_dns_name"),
+        ("https://hooks.slack.com/services/token", "slack_webhook"),
+    ],
+    ids=["public_https", "internal_dns_name", "slack_webhook"],
+)
+def test_DNS名のwebhook_urlはブロックされない(allowed_url, description, manifest_file):
+    """webhook_url with a DNS name (not an IP literal) is allowed unconditionally."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "on_complete": {"webhook_url": allowed_url},
+        "tasks": [{"id": "review", "agent": "code-reviewer", "read_only": True}],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.on_complete is not None
+    assert result.on_complete.webhook_url == allowed_url
+
+
+def test_webhook_urlが2048文字を超えるとManifestErrorが送出される(manifest_file):
+    """webhook_url longer than 2048 characters raises ManifestError."""
+    long_url = "https://example.com/" + "a" * 2048
+    content = f"""\
+---
+clade_plan_version: "0.1"
+name: test
+on_complete:
+  webhook_url: "{long_url}"
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r"maximum allowed length"):
+        load_manifest(path)
+
+
+def test_defaultsの未知キーにwarningが出力される(manifest_file, recwarn):
+    """Unknown key in 'defaults' section triggers a UserWarning."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+defaults:
+  timeout_sec: 600
+  timout_sec: 999
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    load_manifest(path)
+    warning_messages = [str(w.message) for w in recwarn.list]
+    assert any(
+        "timout_sec" in msg for msg in warning_messages
+    ), f"Expected warning about 'timout_sec' key, got: {warning_messages}"
+
+
+def test_webhook設定の未知キーにwarningが出力される(manifest_file, recwarn):
+    """Unknown key in 'on_complete' section triggers a UserWarning."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+on_complete:
+  webhook_url: "https://example.com/hook"
+  extra_key: "ignored"
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    load_manifest(path)
+    warning_messages = [str(w.message) for w in recwarn.list]
+    assert any(
+        "extra_key" in msg for msg in warning_messages
+    ), f"Expected warning about 'extra_key' key, got: {warning_messages}"

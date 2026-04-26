@@ -2454,6 +2454,7 @@ def _make_manifest_with_webhooks(
 
 def test_全タスク成功時にon_complete_webhookが送信される(fake_claude_runner, tmp_path):
     """All tasks succeed → on_complete webhook POST is called once; on_failure is not."""
+    import json
     from unittest.mock import MagicMock, patch
 
     outcomes = [
@@ -2482,12 +2483,23 @@ def test_全タスク成功時にon_complete_webhookが送信される(fake_clau
     req = call_args[0][0]  # first positional arg is the Request object
     assert req.full_url == "https://example.com/done"
     assert req.get_method() == "POST"
+    # Verify the payload fields.
+    payload = json.loads(req.data.decode())
+    assert payload["event"] == "complete"
+    assert payload["manifest"] == manifest.name
+    assert isinstance(payload["total"], int)
+    assert isinstance(payload["succeeded"], int)
+    assert isinstance(payload["failed"], int)
+    assert payload["total"] == 2
+    assert payload["succeeded"] == 2
+    assert payload["failed"] == 0
 
 
 def test_タスク失敗時にon_completeとon_failure両方が送信される(
     fake_claude_runner, tmp_path
 ):
     """One task fails → both on_complete and on_failure webhooks are sent."""
+    import json
     from unittest.mock import MagicMock, patch
 
     outcomes = [
@@ -2515,6 +2527,25 @@ def test_タスク失敗時にon_completeとon_failure両方が送信される(
     called_urls = [call[0][0].full_url for call in mock_urlopen.call_args_list]
     assert "https://example.com/done" in called_urls
     assert "https://example.com/fail" in called_urls
+    # Verify payloads for each webhook call.
+    calls_by_url = {
+        call[0][0].full_url: json.loads(call[0][0].data.decode())
+        for call in mock_urlopen.call_args_list
+    }
+    complete_payload = calls_by_url["https://example.com/done"]
+    assert complete_payload["event"] == "complete"
+    assert complete_payload["manifest"] == manifest.name
+    assert isinstance(complete_payload["total"], int)
+    assert isinstance(complete_payload["succeeded"], int)
+    assert isinstance(complete_payload["failed"], int)
+    assert complete_payload["total"] == 2
+    assert complete_payload["succeeded"] == 1
+    assert complete_payload["failed"] == 1
+    failure_payload = calls_by_url["https://example.com/fail"]
+    assert failure_payload["event"] == "failure"
+    assert failure_payload["total"] == 2
+    assert failure_payload["succeeded"] == 1
+    assert failure_payload["failed"] == 1
 
 
 def test_全タスク成功時にon_failure_webhookは送信されない(fake_claude_runner, tmp_path):
