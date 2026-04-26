@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Concurrency group limiting** (manifest version `"0.7"`): Add `concurrency_group`
+  to individual tasks and define per-group concurrency caps with `concurrency_limits`
+  at the manifest level. Tasks in the same group share a `threading.Semaphore` so
+  at most N tasks from the group run simultaneously, independently of `--max-workers`.
+  ```yaml
+  concurrency_limits:
+    claude-api: 3   # at most 3 tasks from this group run at once
+    db-write: 1     # serialise all db-write tasks
+  tasks:
+    - id: task-a
+      concurrency_group: claude-api
+      ...
+  ```
+  - `concurrency_group` is optional (no group = no extra limit).
+  - `concurrency_limits` is optional; omitting it while referencing a group raises `ManifestError`.
+  - Defining a group in `concurrency_limits` that no task references emits a `warnings.warn`.
+  - Values must be integers >= 1.
+
 ## [0.10.0] - 2026-04-26
 
 ### Added

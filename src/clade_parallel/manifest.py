@@ -11,7 +11,7 @@ import os
 import re
 import sys
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -24,7 +24,7 @@ from ._exceptions import CladeParallelError
 # ---------------------------------------------------------------------------
 
 SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset(
-    {"0.1", "0.2", "0.3", "0.4", "0.5", "0.6"}
+    {"0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7"}
 )
 
 # Upper bounds for retry backoff fields — shared between manifest validation
@@ -121,6 +121,9 @@ class Task:
             retry (exponential backoff). 1.0 means constant delay (default).
             Must be >= 1.0. The actual delay for attempt N is:
             retry_delay_sec * (retry_backoff_factor ** attempt).
+        concurrency_group: Optional group name for concurrency limiting. Tasks in
+            the same group share a semaphore whose limit is defined by
+            ``Manifest.concurrency_limits``. None means no group-level limit.
     """
 
     id: str
@@ -141,6 +144,7 @@ class Task:
     max_retries: int = 0
     retry_delay_sec: float = 0.0
     retry_backoff_factor: float = 1.0
+    concurrency_group: str | None = None
 
 
 @dataclass(frozen=True)
@@ -191,6 +195,9 @@ class Manifest:
             None if not specified.
         on_failure: Webhook config to call when one or more tasks fail.
             None if not specified.
+        concurrency_limits: Mapping of concurrency group name to maximum number
+            of tasks that may run concurrently within that group. Empty dict if
+            not specified.
     """
 
     path: Path
@@ -200,6 +207,7 @@ class Manifest:
     defaults: Defaults | None = None
     on_complete: WebhookConfig | None = None
     on_failure: WebhookConfig | None = None
+    concurrency_limits: dict[str, int] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -762,6 +770,21 @@ def _parse_task(
         effective_backoff, task_id, "retry_backoff_factor"
     )
 
+    # concurrency_group: optional string; must be non-empty when present.
+    concurrency_group: str | None = None
+    raw_concurrency_group = raw.get("concurrency_group")
+    if raw_concurrency_group is not None:
+        if not isinstance(raw_concurrency_group, str):
+            raise ManifestError(
+                f"Task '{task_id}': 'concurrency_group' must be a string,"
+                f" got {type(raw_concurrency_group)!r}."
+            )
+        if raw_concurrency_group == "":
+            raise ManifestError(
+                f"Task '{task_id}': 'concurrency_group' must be a non-empty string."
+            )
+        concurrency_group = raw_concurrency_group
+
     return Task(
         id=task_id,
         agent=agent,
@@ -776,6 +799,7 @@ def _parse_task(
         max_retries=max_retries,
         retry_delay_sec=retry_delay_sec,
         retry_backoff_factor=retry_backoff_factor,
+        concurrency_group=concurrency_group,
     )
 
 
@@ -917,6 +941,87 @@ def _check_writes_conflicts(tasks: tuple[Task, ...]) -> None:
     raise ManifestError("\n".join(lines))
 
 
+def _parse_concurrency_limits(raw: object, tasks: tuple[Task, ...]) -> dict[str, int]:
+    """Parse and validate the ``concurrency_limits:`` section of a manifest.
+
+    Validates that each value is a positive integer, that every
+    ``concurrency_group`` referenced by a task has a corresponding entry,
+    and warns about entries whose group is not used by any task.
+
+    Args:
+        raw: The raw object from YAML; expected to be a dict or None.
+        tasks: All parsed tasks from the manifest, used for cross-validation.
+
+    Returns:
+        A dict mapping group name to concurrency limit. Empty dict if *raw*
+        is None.
+
+    Raises:
+        ManifestError: If *raw* is not a mapping, if any value is not a
+            positive integer, or if a task references a group that has no
+            entry in *raw*.
+    """
+    if raw is None:
+        # No concurrency_limits section: validate that no task uses a group.
+        used_groups = {
+            t.concurrency_group for t in tasks if t.concurrency_group is not None
+        }
+        if used_groups:
+            sorted_groups = ", ".join(sorted(used_groups))
+            raise ManifestError(
+                f"Task(s) reference concurrency_group(s) {sorted_groups!r}"
+                " but 'concurrency_limits' is not defined in the manifest."
+            )
+        return {}
+
+    if not isinstance(raw, dict):
+        raise ManifestError(
+            f"'concurrency_limits' must be a YAML mapping, got {type(raw)!r}."
+        )
+
+    limits: dict[str, int] = {}
+    for group, value in raw.items():
+        if not isinstance(group, str) or group == "":
+            raise ManifestError(
+                f"'concurrency_limits' keys must be non-empty strings, got {group!r}."
+            )
+        try:
+            limit = int(value)  # type: ignore[call-overload]
+        except (TypeError, ValueError) as exc:
+            raise ManifestError(
+                f"'concurrency_limits.{group}' must be an integer, got {value!r}."
+            ) from exc
+        if limit < 1:
+            raise ManifestError(
+                f"'concurrency_limits.{group}' must be >= 1, got {limit!r}."
+            )
+        limits[group] = limit
+
+    # Cross-validate: every concurrency_group used by a task must have a limit.
+    used_groups = {
+        t.concurrency_group for t in tasks if t.concurrency_group is not None
+    }
+    defined_groups = set(limits.keys())
+
+    missing = used_groups - defined_groups
+    if missing:
+        sorted_missing = ", ".join(sorted(missing))
+        raise ManifestError(
+            f"Task(s) reference concurrency_group(s) {sorted_missing!r}"
+            " that are not defined in 'concurrency_limits'."
+        )
+
+    # Warn about defined groups that no task uses.
+    unused = defined_groups - used_groups
+    for group in sorted(unused):
+        warnings.warn(
+            f"'concurrency_limits' defines group {group!r} but no task uses it.",
+            stacklevel=2,
+        )
+
+    return limits
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -1009,6 +1114,11 @@ def load_manifest(path: str | Path) -> Manifest:
     _check_cyclic_dependencies(tasks)
     _check_writes_conflicts(tasks)
 
+    # Parse optional ``concurrency_limits:`` section.
+    concurrency_limits: dict[str, int] = _parse_concurrency_limits(
+        data.get("concurrency_limits"), tasks
+    )
+
     return Manifest(
         path=resolved,
         clade_plan_version=version,
@@ -1017,4 +1127,5 @@ def load_manifest(path: str | Path) -> Manifest:
         defaults=defaults,
         on_complete=on_complete,
         on_failure=on_failure,
+        concurrency_limits=concurrency_limits,
     )
