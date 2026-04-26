@@ -1461,7 +1461,7 @@ def format_dry_run(manifest: Manifest, *, max_workers: int) -> str:
     num_stages = max(stages.values(), default=0)
 
     lines: list[str] = [
-        "Dry run — no tasks will be executed.",
+        "Dry run -- no tasks will be executed.",
         "",
         f"Execution plan (max_workers={max_workers}):",
     ]
