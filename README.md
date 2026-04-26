@@ -1,6 +1,6 @@
 # clade-parallel
 
-> **Experimental / Alpha — v0.6**
+> **Experimental / Alpha — v0.10**
 > API and CLI are subject to change until v1.0.
 
 Parallel execution wrapper for Clade agents (Python).
@@ -99,6 +99,18 @@ Any Markdown content below the frontmatter is ignored by clade-parallel.
 | `writes` | No | List of file paths the task will write (used for static conflict detection) |
 | `depends_on` | No | List of task IDs that must complete before this task starts |
 | `max_retries` | No | `int`, default `0`. Maximum number of additional attempts after the first failure. `0` = no retries. Timeouts and permanent failures (rate limit, permission denied, etc.) are not retried. |
+| `retry_delay_sec` | No | Base delay in seconds before the first retry. Combined with `retry_backoff_factor` for exponential backoff. Default: `0.0`. |
+| `retry_backoff_factor` | No | Multiplier applied to the delay for each subsequent retry. `1.0` = constant delay; `2.0` = delay doubles each attempt. Default: `1.0`. |
+| `concurrency_group` | No | Named group for concurrency limiting. Tasks in the same group share a semaphore defined by `concurrency_limits`. |
+
+### Manifest-level fields
+
+| Field | Description |
+|-------|-------------|
+| `defaults:` | Global default values applied to all tasks (see [`defaults:` section](#defaults--global-task-defaults)) |
+| `concurrency_limits:` | Per-group concurrency caps (see [Concurrency groups](#concurrency-groups)) |
+| `on_complete:` | Webhook called after all tasks finish (see [Webhook notifications](#webhook-notifications)) |
+| `on_failure:` | Webhook called when one or more tasks fail (see [Webhook notifications](#webhook-notifications)) |
 
 ### Timeout reference values
 
@@ -184,6 +196,120 @@ tasks:
 ---
 ```
 
+### `defaults:` — global task defaults
+
+Use the `defaults:` section (manifest version `"0.6"`) to set common values for all tasks
+at the manifest level. Task-level values always take priority over `defaults:`.
+
+Supported fields: `timeout_sec`, `idle_timeout_sec`, `max_retries`, `retry_delay_sec`, `retry_backoff_factor`.
+
+```markdown
+---
+clade_plan_version: "0.6"
+name: "defaults-example"
+defaults:
+  timeout_sec: 600
+  max_retries: 2
+  retry_delay_sec: 10
+  retry_backoff_factor: 2.0
+tasks:
+  - id: task-a
+    agent: general-purpose
+    read_only: true
+    prompt: "Task A"
+  - id: task-b
+    agent: general-purpose
+    read_only: true
+    prompt: "Task B"
+    timeout_sec: 1200   # overrides defaults.timeout_sec for this task only
+---
+```
+
+### Concurrency groups
+
+Use `concurrency_group` on tasks and `concurrency_limits` at the manifest level
+(manifest version `"0.7"`) to cap how many tasks from the same group run simultaneously,
+independently of `--max-workers`.
+
+`--max-workers` limits the total number of tasks running across the entire manifest.
+`concurrency_limits` adds a finer-grained cap per named group, useful for avoiding
+API rate limits or serialising access to a shared resource.
+
+```markdown
+---
+clade_plan_version: "0.7"
+name: "concurrency-example"
+concurrency_limits:
+  claude-api: 3   # at most 3 tasks from this group run at once
+  db-write: 1     # serialise all db-write tasks
+tasks:
+  - id: review-a
+    agent: code-reviewer
+    read_only: true
+    concurrency_group: claude-api
+    prompt: "Review module A"
+  - id: review-b
+    agent: code-reviewer
+    read_only: true
+    concurrency_group: claude-api
+    prompt: "Review module B"
+  - id: migrate
+    agent: developer
+    read_only: false
+    concurrency_group: db-write
+    prompt: "Run migration"
+---
+```
+
+**Notes:**
+
+- `concurrency_group` is optional; tasks without a group are not subject to group limits.
+- `concurrency_limits` must define an entry for every group name referenced by tasks (omitting it raises `ManifestError`).
+- Defining a group in `concurrency_limits` that no task references emits a `warnings.warn`.
+- Limit values must be integers >= 1.
+
+### Webhook notifications
+
+Use `on_complete` and `on_failure` (manifest version `"0.6"`) to send HTTP POST notifications
+when a run finishes. Each section requires only `webhook_url`.
+
+```markdown
+---
+clade_plan_version: "0.6"
+name: "webhook-example"
+on_complete:
+  webhook_url: "https://hooks.example.com/notify"
+on_failure:
+  webhook_url: "https://hooks.example.com/alert"
+tasks:
+  - id: task-a
+    agent: general-purpose
+    read_only: true
+    prompt: "Do something"
+---
+```
+
+**JSON payload sent to `webhook_url`:**
+
+```json
+{
+  "event": "complete",
+  "manifest": "webhook-example",
+  "total": 5,
+  "succeeded": 4,
+  "failed": 1,
+  "skipped": 0,
+  "duration_sec": 123.4
+}
+```
+
+For `on_failure`, the `"event"` field is `"failure"`.
+
+**Notes:**
+
+- Requests time out after 10 seconds. Failures emit a warning to stderr and **never** affect the overall exit code.
+- `webhook_url` must start with `http://` or `https://`. Private/loopback IP addresses are blocked for SSRF prevention.
+
 ### Manifest version history
 
 | `clade_plan_version` | Notable additions |
@@ -192,8 +318,11 @@ tasks:
 | `"0.2"` | `writes:` declarations + static conflict checks |
 | `"0.3"` | `depends_on:` DAG scheduler + worktree isolation for write tasks |
 | `"0.4"` | `max_retries` field (automatic retry on transient failures) |
+| `"0.5"` | `retry_delay_sec`, `retry_backoff_factor` fields; `"rate_limited"` failure category |
+| `"0.6"` | `defaults:` section; `on_complete` / `on_failure` webhook notifications |
+| `"0.7"` | `concurrency_group` per task; `concurrency_limits` at manifest level |
 
-All versions from `0.1` through `0.4` are accepted. Older manifests without
+All versions from `0.1` through `0.7` are accepted. Older manifests without
 `clade_plan_version` default to `"0.1"` behavior.
 
 ## CLI options
@@ -205,8 +334,62 @@ clade-parallel run <manifest> --claude-exe /path/to/claude  # Custom binary
 clade-parallel run <manifest> --quiet                # Summary only (suppress per-task output)
 clade-parallel run <manifest> --log-dir PATH         # Directory for per-task stdout/stderr logs (default: <git-root>/.claude/logs)
 clade-parallel run <manifest> --no-log               # Disable per-task log file persistence
+clade-parallel run <manifest> --dry-run              # Print execution plan without running tasks
+clade-parallel run <manifest> --resume               # Re-run only failed/unexecuted tasks
+clade-parallel run <manifest> --report summary.json  # Write JSON run summary to file
+clade-parallel run <manifest> --report summary.md    # Write Markdown run summary to file
 clade-parallel --version
 clade-parallel --help
+```
+
+### `--report` — run summary output
+
+Pass `--report PATH` to write a summary of the run to a file after all tasks complete.
+The output format is determined by the file extension:
+
+- `.json` — JSON report
+- `.md` or `.markdown` — Markdown report
+
+Existing files are overwritten; parent directories are created automatically.
+
+**JSON output example:**
+
+```json
+{
+  "manifest": "my-plan",
+  "started_at": "2026-04-26T10:00:00Z",
+  "finished_at": "2026-04-26T10:02:03Z",
+  "duration_sec": 123.4,
+  "tasks": [
+    {
+      "id": "task-one",
+      "status": "succeeded",
+      "duration_sec": 45.2,
+      "retry_count": 0,
+      "failure_category": "none"
+    },
+    {
+      "id": "task-two",
+      "status": "failed",
+      "duration_sec": 78.1,
+      "retry_count": 2,
+      "failure_category": "transient"
+    }
+  ]
+}
+```
+
+**Markdown output example:**
+
+```markdown
+# Run Summary: my-plan
+
+Started: 2026-04-26T10:00:00Z  Finished: 2026-04-26T10:02:03Z  Duration: 123.4s
+
+| Task | Status | Duration (s) | Retries | Failure category |
+|------|--------|-------------|---------|-----------------|
+| task-one | succeeded | 45.2 | 0 | none |
+| task-two | failed | 78.1 | 2 | transient |
 ```
 
 ### Timeout output (tail display)
@@ -263,7 +446,8 @@ clade-parallel classifies each failure into a `failure_category` before deciding
 |--------------------|---------|----------|
 | `"none"` | Success | — |
 | `"transient"` | Temporary error (e.g., network blip, unknown non-zero exit) | Yes, up to `max_retries` times |
-| `"permanent"` | Unrecoverable error (rate limit, permission denied, authentication failure, etc.) | No — short-circuits immediately |
+| `"rate_limited"` | Rate limit or quota exceeded | Yes (with backoff), up to `max_retries` times |
+| `"permanent"` | Unrecoverable error (auth failure, invalid API key, credit balance, etc.) | No — short-circuits immediately |
 | `"timeout"` | Task exceeded `timeout_sec` or `idle_timeout_sec` | No — short-circuits immediately |
 
 **Notes:**
@@ -273,6 +457,8 @@ clade-parallel classifies each failure into a `failure_category` before deciding
 - Negative or non-integer values for `max_retries` raise a `ManifestError` at parse time.
 - A reasonable upper bound is 3–5 retries. Very large values (e.g. > 10) can
   waste significant token budget if the failure is systemic rather than transient.
+- Use `retry_delay_sec` and `retry_backoff_factor` to add a delay between attempts:
+  `delay = retry_delay_sec × (retry_backoff_factor ^ attempt_number)`.
 
 ## Task logs
 
@@ -307,6 +493,26 @@ When a task is retried, subsequent attempts are **appended** to the same file wi
 > `.gitignore`), but avoid uploading logs as CI artefacts or sharing them
 > publicly. Use `--no-log` to disable log persistence when running in
 > sensitive environments.
+
+## JSON Schema
+
+A JSON Schema for the manifest format is provided at `schema/manifest.schema.json`.
+Use it to enable editor autocompletion and inline validation.
+
+### VS Code (yaml extension)
+
+Add the following to your `.vscode/settings.json`:
+
+```json
+{
+  "yaml.schemas": {
+    "./schema/manifest.schema.json": ["**/manifest*.md", "**/manifest*.yaml"]
+  }
+}
+```
+
+> **Note:** YAML Language Support by Red Hat (`redhat.vscode-yaml`) is required.
+> The schema applies to the YAML frontmatter block inside Markdown manifest files.
 
 ## Exit codes
 
@@ -389,8 +595,13 @@ pre-commit run --all-files
 | v0.2 | `writes:` declarations + static conflict checks | Released |
 | v0.3 | `depends_on:` DAG scheduler + worktree isolation for write tasks | Released |
 | v0.5 | Progress display, dual timeout (`idle_timeout_sec`), startup phase display | Released |
-| v0.6 | Automatic retry (`max_retries`), per-task log persistence (`--log-dir` / `--no-log`) | In progress |
-| v0.7+ | Partial re-run / telemetry | Planned |
+| v0.6 | Automatic retry (`max_retries`), per-task log persistence (`--log-dir` / `--no-log`) | Released |
+| v0.7 | Default concurrency cap, `--dry-run`, pre-commit hooks | Released |
+| v0.8 | `--resume`, `retry_delay_sec`, `retry_backoff_factor`, `"rate_limited"` category | Released |
+| v0.9 | `defaults:` section, `on_complete` / `on_failure` webhooks | Released |
+| v0.10 | `--report` flag (JSON / Markdown run summary) | Released |
+| v0.11 | `concurrency_group` / `concurrency_limits`, JSON Schema | Released |
+| v1.0+ | Stable API / PyPI publication | Planned |
 
 ## License
 
