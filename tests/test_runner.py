@@ -2799,3 +2799,117 @@ def test_同一グループのタスクがlimit_1で直列になる(fake_claude_
         f"Expected serial execution (>= {2 * sleep_per_task:.2f}s) "
         f"but took {elapsed:.3f}s -- limit=1 semaphore may not be enforced."
     )
+
+
+# ---------------------------------------------------------------------------
+# Concurrency starvation warning tests
+# ---------------------------------------------------------------------------
+
+
+def _make_manifest_with_concurrency_starvation(
+    tmp_path: Path,
+    *,
+    group_name: str = "starvation-group",
+    limit: int,
+    num_tasks: int,
+) -> "Manifest":
+    """Build a manifest where concurrency_limits[group] < max_workers and num_tasks >= max_workers."""
+    import yaml
+
+    tasks = [
+        {
+            "id": f"task-{i}",
+            "agent": "code-reviewer",
+            "read_only": True,
+            "concurrency_group": group_name,
+        }
+        for i in range(num_tasks)
+    ]
+    front = {
+        "clade_plan_version": "0.7",
+        "name": "starvation-test",
+        "concurrency_limits": {group_name: limit},
+        "tasks": tasks,
+    }
+    sep = "---\n"
+    p = tmp_path / "manifest.md"
+    p.write_text(sep + yaml.dump(front) + sep, encoding="utf-8")
+    return load_manifest(p)
+
+
+def test_concurrency_limitがmax_workers未満かつタスク数がmax_workers以上の場合に警告が発行される(
+    fake_claude_runner, tmp_path
+):
+    """run_manifest() emits a UserWarning when concurrency limit < max_workers
+    and the group's task count >= max_workers (thread starvation risk).
+    """
+    import warnings
+
+    # limit=1 < max_workers=3, num_tasks=3 >= max_workers=3 → starvation warning expected
+    limit = 1
+    max_workers = 3
+    num_tasks = 3
+
+    outcomes = [{"returncode": 0, "stdout": "ok", "stderr": ""}] * num_tasks
+    fake_claude_runner(outcomes)
+
+    manifest = _make_manifest_with_concurrency_starvation(
+        tmp_path,
+        group_name="starve-grp",
+        limit=limit,
+        num_tasks=num_tasks,
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = run_manifest(manifest, max_workers=max_workers)
+
+    assert result.overall_ok is True
+
+    starvation_warnings = [
+        w
+        for w in caught
+        if "starve-grp" in str(w.message) and issubclass(w.category, UserWarning)
+    ]
+    assert len(starvation_warnings) >= 1, (
+        f"Expected at least 1 starvation UserWarning for group 'starve-grp', "
+        f"but got {len(starvation_warnings)}. All warnings: {[str(w.message) for w in caught]}"
+    )
+
+
+def test_concurrency_limitがmax_workers以上の場合は警告が発行されない(
+    fake_claude_runner, tmp_path
+):
+    """run_manifest() must NOT emit a starvation warning when limit >= max_workers."""
+    import warnings
+
+    # limit=3 >= max_workers=3 → no starvation warning
+    limit = 3
+    max_workers = 3
+    num_tasks = 3
+
+    outcomes = [{"returncode": 0, "stdout": "ok", "stderr": ""}] * num_tasks
+    fake_claude_runner(outcomes)
+
+    manifest = _make_manifest_with_concurrency_starvation(
+        tmp_path,
+        group_name="safe-grp",
+        limit=limit,
+        num_tasks=num_tasks,
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = run_manifest(manifest, max_workers=max_workers)
+
+    assert result.overall_ok is True
+
+    starvation_warnings = [
+        w
+        for w in caught
+        if "safe-grp" in str(w.message) and issubclass(w.category, UserWarning)
+    ]
+    assert len(starvation_warnings) == 0, (
+        f"Expected no starvation warning when limit >= max_workers, "
+        f"but got: {[str(w.message) for w in starvation_warnings]}"
+    )
