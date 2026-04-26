@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-04-26
+
+### Added
+- **`defaults:` manifest section** (manifest version `"0.6"`): Set global
+  default values for all tasks at the manifest level. Task-level values always
+  take priority. Supported fields: `timeout_sec`, `idle_timeout_sec`,
+  `max_retries`, `retry_delay_sec`, `retry_backoff_factor`. All fields are
+  optional; omitted fields fall back to the existing built-in defaults.
+  Example:
+  ```yaml
+  defaults:
+    timeout_sec: 600
+    max_retries: 2
+    retry_delay_sec: 10
+    retry_backoff_factor: 2.0
+  ```
+- **`on_complete` / `on_failure` webhook notifications** (manifest version
+  `"0.6"`): Send an HTTP POST notification when all tasks finish
+  (`on_complete`) or when one or more tasks fail (`on_failure`). Implemented
+  with stdlib `urllib.request` — no external dependencies added. Requests time
+  out after 10 seconds; failures emit a warning to stderr and never affect the
+  overall exit code. Payload example:
+  ```json
+  {
+    "event": "complete",
+    "manifest": "my-plan",
+    "total": 5,
+    "succeeded": 4,
+    "failed": 1,
+    "skipped": 0,
+    "duration_sec": 123.4
+  }
+  ```
+  Only `webhook_url` (must start with `http://` or `https://`) is required
+  inside each section; the structure is designed for future field additions.
+- **`clade_plan_version: "0.6"`**: New manifest version that enables
+  `defaults:` and `on_complete` / `on_failure`. Versions `"0.1"`–`"0.5"`
+  remain fully supported.
+
 ## [0.8.0] - 2026-04-25
 
 ### Added
