@@ -7,6 +7,7 @@ capturing stdout/stderr and timing for each task.
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import re
 import shutil
@@ -15,6 +16,8 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
+import urllib.request
 import uuid
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -23,7 +26,7 @@ from pathlib import Path
 from typing import IO, Literal
 
 from ._exceptions import CladeParallelError
-from .manifest import MAX_RETRY_DELAY_SEC, Manifest, Task, load_manifest
+from .manifest import MAX_RETRY_DELAY_SEC, Manifest, Task, WebhookConfig, load_manifest
 from .run_state import (
     RunState,
     create_run_state,
@@ -53,6 +56,7 @@ _CONFLICT_STDERR_MAX_CHARS = 2000
 _PROGRESS_INTERVAL_SEC = 5
 _STARTUP_DISPLAY_SEC = 60
 _LAST_LINES_ON_TIMEOUT = 20
+_WEBHOOK_TIMEOUT_SEC = 10
 
 _PERMANENT_RETURNCODES: frozenset[int] = frozenset({2, 126, 127})
 # Re-exported from manifest for use in the retry loop; single source of truth.
@@ -221,6 +225,113 @@ class _RunState:
     lock: threading.Lock = field(default_factory=threading.Lock)
     done_event: threading.Event = field(default_factory=threading.Event)
     kill_reason: Literal["total", "idle"] | None = None
+
+
+def _send_webhook(
+    config: WebhookConfig,
+    *,
+    event: str,
+    manifest_name: str,
+    total: int,
+    succeeded: int,
+    failed: int,
+    skipped: int,
+    duration_sec: float,
+) -> None:
+    """Send an HTTP POST webhook notification on a best-effort basis.
+
+    Fires a single POST request to ``config.webhook_url`` with a JSON payload
+    describing the run outcome. Any failure (network error, non-2xx response,
+    timeout) is caught and logged to stderr as a warning. The return value of
+    this function is always ``None``; callers must not rely on it for flow
+    control.
+
+    Args:
+        config: Webhook configuration containing the target URL.
+        event: Event type string — either ``"complete"`` or ``"failure"``.
+        manifest_name: The ``name`` field from the manifest.
+        total: Total number of tasks in the run.
+        succeeded: Number of tasks that exited successfully.
+        failed: Number of tasks that failed (not skipped, not succeeded).
+        skipped: Number of tasks that were skipped.
+        duration_sec: Wall-clock duration of the run in seconds.
+    """
+    payload = {
+        "event": event,
+        "manifest": manifest_name,
+        "total": total,
+        "succeeded": succeeded,
+        "failed": failed,
+        "skipped": skipped,
+        "duration_sec": duration_sec,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        config.webhook_url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_WEBHOOK_TIMEOUT_SEC):
+            pass  # response body is intentionally ignored
+    except (urllib.error.URLError, OSError) as exc:
+        print(
+            f"Warning: webhook notification failed ({event}): {exc}",
+            file=sys.stderr,
+        )
+
+
+def _dispatch_webhooks(
+    manifest: Manifest,
+    run_result: RunResult,
+    *,
+    run_start_time: float,
+) -> None:
+    """Fire ``on_complete`` and ``on_failure`` webhook notifications.
+
+    ``on_complete`` is always sent when the manifest declares it, regardless of
+    whether any tasks failed. ``on_failure`` is sent only when at least one task
+    did not succeed.
+
+    All HTTP errors are handled inside :func:`_send_webhook`; this function
+    never raises.
+
+    Args:
+        manifest: The manifest that was executed.
+        run_result: The aggregated result of the run.
+        run_start_time: ``time.perf_counter()`` value captured at run start,
+            used to compute ``duration_sec``.
+    """
+    duration_sec = time.perf_counter() - run_start_time
+    total = len(run_result.results)
+    succeeded = sum(1 for r in run_result.results if r.ok)
+    skipped = sum(1 for r in run_result.results if r.skipped)
+    failed = total - succeeded - skipped
+
+    if manifest.on_complete is not None:
+        _send_webhook(
+            manifest.on_complete,
+            event="complete",
+            manifest_name=manifest.name,
+            total=total,
+            succeeded=succeeded,
+            failed=failed,
+            skipped=skipped,
+            duration_sec=round(duration_sec, 1),
+        )
+
+    if manifest.on_failure is not None and failed > 0:
+        _send_webhook(
+            manifest.on_failure,
+            event="failure",
+            manifest_name=manifest.name,
+            total=total,
+            succeeded=succeeded,
+            failed=failed,
+            skipped=skipped,
+            duration_sec=round(duration_sec, 1),
+        )
 
 
 def _classify_failure(returncode: int | None, stderr: str) -> FailureCategory:
@@ -1399,6 +1510,7 @@ def run_manifest(
     if not isinstance(manifest, Manifest):
         manifest = load_manifest(manifest)
 
+    _run_start_time = time.perf_counter()
     tasks: Sequence[Task] = manifest.tasks
     workers = max_workers if max_workers is not None else _DEFAULT_MAX_WORKERS
 
@@ -1492,5 +1604,8 @@ def run_manifest(
     # some tasks failed.
     if run_result.overall_ok:
         delete_run_state(manifest_path)
+
+    # Send webhook notifications (best-effort; never raises).
+    _dispatch_webhooks(manifest, run_result, run_start_time=_run_start_time)
 
     return run_result
