@@ -35,6 +35,7 @@
         "^.+$": {
           "type": "integer",
           "minimum": 1,
+          "maximum": 256,
           "description": "Maximum number of concurrent tasks in this group"
         }
       },
