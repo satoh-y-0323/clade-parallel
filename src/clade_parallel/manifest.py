@@ -20,7 +20,9 @@ from ._exceptions import CladeParallelError
 # Public constants
 # ---------------------------------------------------------------------------
 
-SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1", "0.2", "0.3", "0.4", "0.5"})
+SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset(
+    {"0.1", "0.2", "0.3", "0.4", "0.5", "0.6"}
+)
 
 # Upper bounds for retry backoff fields — shared between manifest validation
 # and the runner so both always enforce the same limits.
@@ -122,6 +124,40 @@ class Task:
 
 
 @dataclass(frozen=True)
+class Defaults:
+    """Global default values applied to all tasks in a manifest.
+
+    Each field is optional; only explicitly set fields override the built-in
+    task defaults. Task-level values always take priority over these defaults.
+
+    Attributes:
+        timeout_sec: Default total timeout in seconds for each task.
+        idle_timeout_sec: Default idle timeout in seconds for each task.
+            None means no idle timeout by default.
+        max_retries: Default maximum number of retries for each task.
+        retry_delay_sec: Default base delay in seconds before the first retry.
+        retry_backoff_factor: Default exponential backoff multiplier.
+    """
+
+    timeout_sec: int | None = None
+    idle_timeout_sec: int | None = None
+    max_retries: int | None = None
+    retry_delay_sec: float | None = None
+    retry_backoff_factor: float | None = None
+
+
+@dataclass(frozen=True)
+class WebhookConfig:
+    """Webhook notification configuration for a manifest event.
+
+    Attributes:
+        webhook_url: The HTTP/HTTPS URL to POST the notification to.
+    """
+
+    webhook_url: str
+
+
+@dataclass(frozen=True)
 class Manifest:
     """Parsed representation of a clade-parallel manifest file.
 
@@ -130,12 +166,20 @@ class Manifest:
         clade_plan_version: Version string from the frontmatter.
         name: Human-readable name of the plan.
         tasks: Ordered tuple of tasks declared in the manifest.
+        defaults: Global default values for task fields. None if not specified.
+        on_complete: Webhook config to call after all tasks finish.
+            None if not specified.
+        on_failure: Webhook config to call when one or more tasks fail.
+            None if not specified.
     """
 
     path: Path
     clade_plan_version: str
     name: str
     tasks: tuple[Task, ...]
+    defaults: Defaults | None = None
+    on_complete: WebhookConfig | None = None
+    on_failure: WebhookConfig | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +368,100 @@ def _normalize_write_path(raw: object, task_id: str, cwd: Path) -> str:
     return Path(os.path.normpath(p)).as_posix()
 
 
+def _parse_defaults(raw: object) -> Defaults:
+    """Parse the ``defaults:`` section of a manifest into a Defaults dataclass.
+
+    All fields are optional; fields that are absent in the YAML are left as
+    ``None`` so that downstream code can distinguish "not set" from "set to 0".
+
+    Args:
+        raw: The raw object from YAML; expected to be a dict.
+
+    Returns:
+        A validated, frozen Defaults instance.
+
+    Raises:
+        ManifestError: If *raw* is not a mapping, or if any field value fails
+            its type / range check.
+    """
+    if not isinstance(raw, dict):
+        raise ManifestError(f"'defaults' must be a YAML mapping, got {type(raw)!r}.")
+
+    # Use a sentinel task_id for error messages in the shared parsers.
+    _ctx = "defaults"
+
+    timeout_sec: int | None = None
+    if "timeout_sec" in raw:
+        timeout_sec = _parse_positive_int(raw["timeout_sec"], _ctx, "timeout_sec")
+
+    idle_timeout_sec: int | None = None
+    if "idle_timeout_sec" in raw:
+        idle_timeout_sec = _parse_positive_int(
+            raw["idle_timeout_sec"], _ctx, "idle_timeout_sec"
+        )
+
+    max_retries: int | None = None
+    if "max_retries" in raw:
+        max_retries = _parse_non_negative_int(raw["max_retries"], _ctx, "max_retries")
+
+    retry_delay_sec: float | None = None
+    if "retry_delay_sec" in raw:
+        retry_delay_sec = _parse_non_negative_float(
+            raw["retry_delay_sec"], _ctx, "retry_delay_sec"
+        )
+
+    retry_backoff_factor: float | None = None
+    if "retry_backoff_factor" in raw:
+        retry_backoff_factor = _parse_backoff_factor(
+            raw["retry_backoff_factor"], _ctx, "retry_backoff_factor"
+        )
+
+    return Defaults(
+        timeout_sec=timeout_sec,
+        idle_timeout_sec=idle_timeout_sec,
+        max_retries=max_retries,
+        retry_delay_sec=retry_delay_sec,
+        retry_backoff_factor=retry_backoff_factor,
+    )
+
+
+def _parse_webhook_config(raw: object, section_name: str) -> WebhookConfig:
+    """Parse a ``on_complete`` or ``on_failure`` section into a WebhookConfig.
+
+    Args:
+        raw: The raw object from YAML; expected to be a dict with
+            ``webhook_url``.
+        section_name: The YAML key name (e.g. ``'on_complete'``) used in
+            error messages.
+
+    Returns:
+        A validated, frozen WebhookConfig instance.
+
+    Raises:
+        ManifestError: If *raw* is not a mapping, or if ``webhook_url`` is
+            missing or does not start with ``http://`` or ``https://``.
+    """
+    if not isinstance(raw, dict):
+        raise ManifestError(
+            f"'{section_name}' must be a YAML mapping, got {type(raw)!r}."
+        )
+
+    url = raw.get("webhook_url")
+    if url is None:
+        raise ManifestError(f"'{section_name}' is missing required key: 'webhook_url'.")
+    if not isinstance(url, str):
+        raise ManifestError(
+            f"'{section_name}.webhook_url' must be a string, got {type(url)!r}."
+        )
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ManifestError(
+            f"'{section_name}.webhook_url' must start with 'http://' or 'https://',"
+            f" got {url!r}."
+        )
+
+    return WebhookConfig(webhook_url=url)
+
+
 def _extract_frontmatter(text: str) -> str:
     """Extract the YAML frontmatter block from a manifest text.
 
@@ -362,12 +500,16 @@ def _extract_frontmatter(text: str) -> str:
     return "\n".join(lines[1:closing_index])
 
 
-def _parse_task(raw: object, default_cwd: Path) -> Task:
+def _parse_task(
+    raw: object, default_cwd: Path, defaults: Defaults | None = None
+) -> Task:
     """Parse a single raw task dict into a Task dataclass.
 
     Args:
         raw: The raw object from YAML; expected to be a dict.
         default_cwd: Fallback working directory if the task omits ``cwd``.
+        defaults: Global default values from the manifest ``defaults:`` section.
+            Task-level values always override these defaults.
 
     Returns:
         A validated, frozen Task instance.
@@ -408,16 +550,29 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
     # Optional fields with defaults.
     prompt: str = raw.get("prompt", f"/agent-{agent}")
 
-    timeout_sec: int = _parse_positive_int(
-        raw.get("timeout_sec", 900), task_id, "timeout_sec"
+    # Resolve effective defaults: task-level value > manifest defaults > built-in.
+    _builtin_timeout = 900
+    _effective_timeout = (
+        raw["timeout_sec"]
+        if "timeout_sec" in raw
+        else (
+            defaults.timeout_sec
+            if defaults is not None and defaults.timeout_sec is not None
+            else _builtin_timeout
+        )
     )
+    timeout_sec: int = _parse_positive_int(_effective_timeout, task_id, "timeout_sec")
 
-    idle_timeout_raw = raw.get("idle_timeout_sec")
-    idle_timeout_sec: int | None = (
-        _parse_positive_int(idle_timeout_raw, task_id, "idle_timeout_sec")
-        if idle_timeout_raw is not None
-        else None
-    )
+    # idle_timeout_sec: task-level > manifest defaults > None (disabled).
+    if "idle_timeout_sec" in raw:
+        idle_timeout_raw = raw["idle_timeout_sec"]
+        idle_timeout_sec: int | None = _parse_positive_int(
+            idle_timeout_raw, task_id, "idle_timeout_sec"
+        )
+    elif defaults is not None and defaults.idle_timeout_sec is not None:
+        idle_timeout_sec = defaults.idle_timeout_sec
+    else:
+        idle_timeout_sec = None
 
     # Warn when idle_timeout_sec is set on a read_only task: the agent enters
     # a silent synthesis phase after reading files, which would trigger a false
@@ -478,16 +633,46 @@ def _parse_task(raw: object, default_cwd: Path) -> Task:
     # Deduplicate while preserving order.
     depends_on: tuple[str, ...] = tuple(dict.fromkeys(raw_depends_on))
 
+    # max_retries: task-level > manifest defaults > 0 (built-in).
+    _effective_max_retries = (
+        raw["max_retries"]
+        if "max_retries" in raw
+        else (
+            defaults.max_retries
+            if defaults is not None and defaults.max_retries is not None
+            else 0
+        )
+    )
     max_retries: int = _parse_non_negative_int(
-        raw.get("max_retries", 0), task_id, "max_retries"
+        _effective_max_retries, task_id, "max_retries"
     )
 
+    # retry_delay_sec: task-level > manifest defaults > 0.0 (built-in).
+    _effective_retry_delay = (
+        raw["retry_delay_sec"]
+        if "retry_delay_sec" in raw
+        else (
+            defaults.retry_delay_sec
+            if defaults is not None and defaults.retry_delay_sec is not None
+            else 0.0
+        )
+    )
     retry_delay_sec: float = _parse_non_negative_float(
-        raw.get("retry_delay_sec", 0.0), task_id, "retry_delay_sec"
+        _effective_retry_delay, task_id, "retry_delay_sec"
     )
 
+    # retry_backoff_factor: task-level > manifest defaults > 1.0 (built-in).
+    _effective_backoff = (
+        raw["retry_backoff_factor"]
+        if "retry_backoff_factor" in raw
+        else (
+            defaults.retry_backoff_factor
+            if defaults is not None and defaults.retry_backoff_factor is not None
+            else 1.0
+        )
+    )
     retry_backoff_factor: float = _parse_backoff_factor(
-        raw.get("retry_backoff_factor", 1.0), task_id, "retry_backoff_factor"
+        _effective_backoff, task_id, "retry_backoff_factor"
     )
 
     return Task(
@@ -699,6 +884,23 @@ def load_manifest(path: str | Path) -> Manifest:
 
     name: str = data.get("name", "")
 
+    # Parse optional ``defaults:`` section.
+    defaults: Defaults | None = None
+    raw_defaults = data.get("defaults")
+    if raw_defaults is not None:
+        defaults = _parse_defaults(raw_defaults)
+
+    # Parse optional ``on_complete`` and ``on_failure`` sections.
+    on_complete: WebhookConfig | None = None
+    raw_on_complete = data.get("on_complete")
+    if raw_on_complete is not None:
+        on_complete = _parse_webhook_config(raw_on_complete, "on_complete")
+
+    on_failure: WebhookConfig | None = None
+    raw_on_failure = data.get("on_failure")
+    if raw_on_failure is not None:
+        on_failure = _parse_webhook_config(raw_on_failure, "on_failure")
+
     # Validate tasks.
     raw_tasks = data.get("tasks")
     if raw_tasks is None:
@@ -712,7 +914,9 @@ def load_manifest(path: str | Path) -> Manifest:
 
     default_cwd = resolved.parent.resolve()
 
-    tasks = tuple(_parse_task(raw_task, default_cwd) for raw_task in raw_tasks)
+    tasks = tuple(
+        _parse_task(raw_task, default_cwd, defaults) for raw_task in raw_tasks
+    )
 
     _check_depends_on_refs(tasks)
     _check_cyclic_dependencies(tasks)
@@ -723,4 +927,7 @@ def load_manifest(path: str | Path) -> Manifest:
         clade_plan_version=version,
         name=name,
         tasks=tasks,
+        defaults=defaults,
+        on_complete=on_complete,
+        on_failure=on_failure,
     )
