@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-04-26
+
+### Fixed
+- **`--dry-run` on Windows**: Replace em dash (`—`) with ASCII double-hyphen (`--`) in the dry-run header to fix `UnicodeEncodeError` on Windows terminals using cp932 encoding.
+
 ## [1.0.0] - 2026-04-26
 
 ### Added
