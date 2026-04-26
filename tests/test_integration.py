@@ -165,7 +165,7 @@ class TestParallelExecution:
     ) -> None:
         """Wall-clock time must be less than sum of individual sleep durations."""
         manifest_path = _write_manifest(tmp_path)
-        sleep_per_task = 0.3
+        sleep_per_task = 0.5
         fake_claude_runner(
             [
                 {"returncode": 0, "sleep_sec": sleep_per_task},
@@ -179,7 +179,8 @@ class TestParallelExecution:
         elapsed = time.perf_counter() - start
 
         # Parallel: elapsed < 2 * sleep_per_task with comfortable margin.
-        assert elapsed < sleep_per_task * 2 * 0.9, (
+        # Threshold relaxed to 0.75 (from 0.9) to tolerate CI scheduler jitter.
+        assert elapsed < sleep_per_task * 2 * 0.75, (
             f"Elapsed {elapsed:.3f}s is not shorter than serial time "
             f"{sleep_per_task * 2:.3f}s; tasks may not be running in parallel."
         )

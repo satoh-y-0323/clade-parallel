@@ -1541,7 +1541,7 @@ def test_進捗表示running_フォーマットがstderrに出力される(monke
             self.stderr = io.StringIO("")
 
         def wait(self) -> int | None:
-            time.sleep(0.15)  # Allow 2-3 watchdog ticks at 0.05s interval
+            time.sleep(1.0)  # Allow many watchdog ticks at 0.05s interval (CI-safe)
             return self.returncode
 
     monkeypatch.setattr(runner_module.subprocess, "Popen", _SlowExitFakePopen)
