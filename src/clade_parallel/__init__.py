@@ -3,21 +3,25 @@
 from ._exceptions import CladeParallelError
 from .manifest import (
     SUPPORTED_PLAN_VERSIONS,
+    Defaults,
     Manifest,
     ManifestError,
     Task,
+    WebhookConfig,
     load_manifest,
 )
 from .runner import RunnerError, RunResult, TaskResult, run_manifest
 
-__version__ = "0.5.3"
+__version__ = "0.8.0"
 
 __all__ = [
     "CladeParallelError",
     "SUPPORTED_PLAN_VERSIONS",
+    "Defaults",
     "Manifest",
     "ManifestError",
     "Task",
+    "WebhookConfig",
     "load_manifest",
     "RunnerError",
     "RunResult",
