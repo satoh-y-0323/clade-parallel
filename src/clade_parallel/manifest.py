@@ -519,9 +519,10 @@ def _parse_webhook_config(raw: object, section_name: str) -> WebhookConfig:
             f"'{section_name}.webhook_url' must be a string, got {type(url)!r}."
         )
     if not (url.startswith("http://") or url.startswith("https://")):
+        parsed_scheme = urlparse(url)
         raise ManifestError(
-            f"'{section_name}.webhook_url' must start with 'http://' or 'https://',"
-            f" got {url!r}."
+            f"'{section_name}.webhook_url' scheme must be 'http' or 'https',"
+            f" got '{parsed_scheme.scheme or '(none)'}'"
         )
 
     # URL length guard: excessively long URLs are likely a mis-configuration or

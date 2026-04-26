@@ -23,7 +23,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Literal
+from typing import IO, Any, Literal
 
 from ._exceptions import CladeParallelError
 from .manifest import MAX_RETRY_DELAY_SEC, Manifest, Task, WebhookConfig, load_manifest
@@ -227,6 +227,30 @@ class _RunState:
     kill_reason: Literal["total", "idle"] | None = None
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Disable automatic redirect following for webhook requests.
+
+    Prevents open-redirect attacks where a webhook server responds with
+    a 3xx redirect pointing to a cloud metadata endpoint (e.g. 169.254.169.254).
+    ``HTTPError`` is a subclass of ``URLError``, so it is caught by the
+    existing ``except (urllib.error.URLError, OSError, ValueError)`` in
+    ``_send_webhook``.
+    """
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        raise urllib.error.HTTPError(
+            req.full_url, code, "redirects are not followed", headers, fp
+        )
+
+
 def _send_webhook(
     config: WebhookConfig,
     *,
@@ -273,7 +297,8 @@ def _send_webhook(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=_WEBHOOK_TIMEOUT_SEC):
+        opener = urllib.request.build_opener(_NoRedirectHandler)
+        with opener.open(req, timeout=_WEBHOOK_TIMEOUT_SEC):
             pass  # response body is intentionally ignored
     except (urllib.error.URLError, OSError, ValueError) as exc:
         print(
