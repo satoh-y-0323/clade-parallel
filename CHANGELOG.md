@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-04-26
+
 ### Added
 - **`--report PATH` CLI flag**: Write a JSON or Markdown run summary to a file
   after all tasks complete. The output format is determined by the file

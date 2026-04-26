@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clade-parallel"
-version = "0.9.0"
+version = "0.10.0"
 description = "Run Clade agents in parallel from a YAML-frontmatter Markdown manifest, with git worktree isolation for write tasks."
 requires-python = ">=3.10"
 dependencies = ["PyYAML>=6.0"]
