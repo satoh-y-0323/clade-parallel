@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-04-26
+
 ### Added
 - **Concurrency group limiting** (manifest version `"0.7"`): Add `concurrency_group`
   to individual tasks and define per-group concurrency caps with `concurrency_limits`
