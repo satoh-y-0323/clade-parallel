@@ -3063,3 +3063,48 @@ def test_manifest_v07で正常にパースできる(manifest_file):
     assert result.concurrency_limits == {"review-group": 2}
     for task in result.tasks:
         assert task.concurrency_group == "review-group"
+
+
+# ---------------------------------------------------------------------------
+# concurrency_group 型チェックのテスト（非文字列型を渡した場合の ManifestError）
+# ---------------------------------------------------------------------------
+
+
+def test_concurrency_groupに整数を渡すとManifestError(manifest_file):
+    """concurrency_group set to an integer raises ManifestError."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+concurrency_limits:
+  "1": 2
+tasks:
+  - id: task1
+    agent: developer
+    read_only: false
+    concurrency_group: 1
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match="concurrency_group"):
+        load_manifest(path)
+
+
+def test_concurrency_groupにリストを渡すとManifestError(manifest_file):
+    """concurrency_group set to a list raises ManifestError."""
+    content = """\
+---
+clade_plan_version: "0.1"
+name: test
+tasks:
+  - id: task1
+    agent: developer
+    read_only: true
+    concurrency_group:
+      - item1
+      - item2
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match="concurrency_group"):
+        load_manifest(path)

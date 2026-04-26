@@ -64,7 +64,9 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Run pip-audit
-        # CVE-2026-3219 (pip) has no fix version available yet; ignore until upstream resolves it.
+        # CVE-2026-3219 (pip): no fix version available as of 2026-04-26.
+        # Re-evaluate when pip releases a patched version.
+        # Tracked: https://github.com/satoh-y-0323/clade-parallel/issues (add issue number when created)
         run: pip-audit --skip-editable --ignore-vuln CVE-2026-3219
 
   pre-commit:
