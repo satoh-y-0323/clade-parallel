@@ -1,0 +1,9 @@
+{
+  "yaml.schemas": {
+    "./schema/manifest.schema.json": [
+      "**/plan-report-*.md",
+      "**/*manifest*.md",
+      "**/*manifest*.yaml"
+    ]
+  }
+}

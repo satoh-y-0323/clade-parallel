@@ -1,0 +1,175 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/satoh-y-0323/clade-parallel/blob/main/schema/manifest.schema.json",
+  "title": "clade-parallel Manifest",
+  "description": "Schema for clade-parallel manifest files (YAML frontmatter in Markdown).",
+  "type": "object",
+  "required": ["clade_plan_version", "name", "tasks"],
+  "additionalProperties": false,
+  "properties": {
+    "clade_plan_version": {
+      "type": "string",
+      "enum": ["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7"],
+      "description": "Version of the clade-parallel manifest format."
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable name of the plan."
+    },
+    "tasks": {
+      "type": "array",
+      "description": "Ordered list of agent tasks to execute.",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/Task"
+      }
+    },
+    "defaults": {
+      "$ref": "#/definitions/Defaults",
+      "description": "Global default values applied to all tasks. Task-level values always take priority."
+    },
+    "concurrency_limits": {
+      "type": "object",
+      "description": "Maximum number of concurrently running tasks per named concurrency group.",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "on_complete": {
+      "$ref": "#/definitions/WebhookConfig",
+      "description": "Webhook called after all tasks finish successfully."
+    },
+    "on_failure": {
+      "$ref": "#/definitions/WebhookConfig",
+      "description": "Webhook called when one or more tasks fail."
+    }
+  },
+  "definitions": {
+    "Defaults": {
+      "type": "object",
+      "description": "Global default values for task fields. All fields are optional.",
+      "additionalProperties": false,
+      "properties": {
+        "timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Default total timeout in seconds for each task."
+        },
+        "idle_timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Default idle timeout in seconds. Task is killed when no output is produced for this duration. Ignored for read_only tasks."
+        },
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Default maximum number of additional attempts after the first try."
+        },
+        "retry_delay_sec": {
+          "type": "number",
+          "minimum": 0.0,
+          "description": "Default base delay in seconds before the first retry."
+        },
+        "retry_backoff_factor": {
+          "type": "number",
+          "minimum": 1.0,
+          "description": "Default exponential backoff multiplier for retry delays. 1.0 means constant delay."
+        }
+      }
+    },
+    "Task": {
+      "type": "object",
+      "description": "A single agent task declaration.",
+      "required": ["id", "agent", "read_only"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "Unique identifier for this task within the manifest. Only alphanumeric characters, hyphens, and underscores are allowed."
+        },
+        "agent": {
+          "type": "string",
+          "description": "Name of the agent that will execute this task (e.g. 'developer', 'tester')."
+        },
+        "read_only": {
+          "type": "boolean",
+          "description": "Whether the agent runs in read-only mode. idle_timeout_sec is ignored when true."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Prompt string passed to the agent. Defaults to '/agent-{agent}' if omitted."
+        },
+        "timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum execution time in seconds for this task. Overrides defaults.timeout_sec."
+        },
+        "idle_timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Task is killed when no output is produced for this many seconds. Ignored for read_only tasks. Overrides defaults.idle_timeout_sec."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for the agent process. Relative paths are resolved against the manifest file's directory."
+        },
+        "env": {
+          "type": "object",
+          "description": "Additional environment variables for the agent process. LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT, DYLD_INSERT_LIBRARIES, DYLD_LIBRARY_PATH, and PYTHONPATH are blocked for security reasons.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "writes": {
+          "type": "array",
+          "description": "Filesystem paths that this task declares it will write. Used for static write-conflict detection across tasks.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "depends_on": {
+          "type": "array",
+          "description": "List of task IDs that must complete before this task starts. Duplicates are ignored. Cyclic dependencies are rejected.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of additional attempts after the first try. 0 means no retries. Overrides defaults.max_retries."
+        },
+        "retry_delay_sec": {
+          "type": "number",
+          "minimum": 0.0,
+          "description": "Base delay in seconds before the first retry. Combined with retry_backoff_factor for exponential backoff. Overrides defaults.retry_delay_sec."
+        },
+        "retry_backoff_factor": {
+          "type": "number",
+          "minimum": 1.0,
+          "description": "Multiplier applied to the delay for each subsequent retry. 1.0 means constant delay. Overrides defaults.retry_backoff_factor."
+        },
+        "concurrency_group": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Named group for concurrency limiting. Tasks in the same group share a semaphore defined by concurrency_limits. Must have a corresponding entry in concurrency_limits."
+        }
+      }
+    },
+    "WebhookConfig": {
+      "type": "object",
+      "description": "Webhook notification configuration.",
+      "required": ["webhook_url"],
+      "additionalProperties": false,
+      "properties": {
+        "webhook_url": {
+          "type": "string",
+          "pattern": "^https?://",
+          "description": "HTTP or HTTPS URL to POST the notification to. Loopback, link-local, private, and unspecified IP addresses are blocked for SSRF prevention."
+        }
+      }
+    }
+  }
+}
