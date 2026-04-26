@@ -2672,3 +2672,130 @@ def test_タスク失敗時on_failure未設定なら送信されない(fake_clau
     assert mock_opener.open.call_count == 1
     called_url = mock_opener.open.call_args[0][0].full_url
     assert called_url == "https://example.com/done"
+
+
+# ---------------------------------------------------------------------------
+# Concurrency group tests (T-new: semaphore acquire/release + limit enforcement)
+# ---------------------------------------------------------------------------
+
+
+def _make_manifest_with_concurrency_group(
+    tmp_path: Path,
+    *,
+    group_name: str = "test-group",
+    limit: int = 2,
+    num_tasks: int = 2,
+) -> "Manifest":
+    """Build a manifest with concurrency_limits and tasks sharing a group."""
+    import yaml
+
+    tasks = [
+        {
+            "id": f"task-{i}",
+            "agent": "code-reviewer",
+            "read_only": True,
+            "concurrency_group": group_name,
+        }
+        for i in range(num_tasks)
+    ]
+    front = {
+        "clade_plan_version": "0.7",
+        "name": "concurrency-test",
+        "concurrency_limits": {group_name: limit},
+        "tasks": tasks,
+    }
+    sep = "---\n"
+    p = tmp_path / "manifest.md"
+    p.write_text(sep + yaml.dump(front) + sep, encoding="utf-8")
+    return load_manifest(p)
+
+
+def test_concurrency_group付きタスクがセマフォを取得して実行される(
+    fake_claude_runner, tmp_path, monkeypatch
+):
+    """Tasks with concurrency_group acquire and release the group semaphore.
+
+    Uses a threading.Semaphore subclass (value > 0 filter) to track calls
+    without breaking ThreadPoolExecutor's internal Semaphore(0).
+    """
+    outcomes = [
+        {"returncode": 0, "stdout": "ok", "stderr": ""},
+        {"returncode": 0, "stdout": "ok", "stderr": ""},
+    ]
+    fake_claude_runner(outcomes)
+
+    acquire_count = [0]
+    release_count = [0]
+    count_lock = threading.Lock()
+
+    class _TrackingSemaphore(threading.Semaphore):
+        """threading.Semaphore subclass that tracks acquire/release for group semaphores.
+
+        Only counts operations on semaphores initialised with value > 0.
+        ThreadPoolExecutor's internal semaphore uses Semaphore(0) and is
+        intentionally excluded so the counts reflect runner group semaphores only.
+        """
+
+        def __init__(self, value: int = 1) -> None:
+            super().__init__(value)
+            self._is_group_sem = value > 0
+
+        def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+            result = super().acquire(blocking=blocking, timeout=timeout)
+            if result and self._is_group_sem:
+                with count_lock:
+                    acquire_count[0] += 1
+            return result
+
+        def release(self, n: int = 1) -> None:
+            super().release(n)
+            if self._is_group_sem:
+                with count_lock:
+                    release_count[0] += n
+
+    import clade_parallel.runner as runner_module
+
+    monkeypatch.setattr(runner_module.threading, "Semaphore", _TrackingSemaphore)
+
+    manifest = _make_manifest_with_concurrency_group(
+        tmp_path, group_name="grp", limit=2, num_tasks=2
+    )
+    result = run_manifest(manifest)
+
+    assert result.overall_ok is True
+    assert (
+        acquire_count[0] == 2
+    ), f"Expected 2 semaphore acquires (one per task), got {acquire_count[0]}"
+    assert (
+        release_count[0] == 2
+    ), f"Expected 2 semaphore releases (one per task), got {release_count[0]}"
+
+
+def test_同一グループのタスクがlimit_1で直列になる(fake_claude_runner, tmp_path):
+    """Tasks in the same concurrency group with limit=1 must run serially.
+
+    With limit=1, the semaphore allows only one task at a time.
+    Two tasks each sleeping 0.15s must take >= 0.25s total when limit=1,
+    but would take < 0.25s if run in parallel.
+    """
+    sleep_per_task = 0.15
+    outcomes = [
+        {"returncode": 0, "sleep_sec": sleep_per_task},
+        {"returncode": 0, "sleep_sec": sleep_per_task},
+    ]
+    fake_claude_runner(outcomes)
+
+    manifest = _make_manifest_with_concurrency_group(
+        tmp_path, group_name="serial-grp", limit=1, num_tasks=2
+    )
+
+    start = time.perf_counter()
+    result = run_manifest(manifest, max_workers=4)
+    elapsed = time.perf_counter() - start
+
+    assert result.overall_ok is True
+    # limit=1 forces serial execution: total >= 2 * sleep_per_task (with margin)
+    assert elapsed >= (2 * sleep_per_task - 0.05), (
+        f"Expected serial execution (>= {2 * sleep_per_task:.2f}s) "
+        f"but took {elapsed:.3f}s -- limit=1 semaphore may not be enforced."
+    )

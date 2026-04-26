@@ -2809,3 +2809,257 @@ tasks:
     assert any(
         "extra_key" in msg for msg in warning_messages
     ), f"Expected warning about 'extra_key' key, got: {warning_messages}"
+
+
+# ---------------------------------------------------------------------------
+# Concurrency group tests (T-new: concurrency_group / concurrency_limits)
+# ---------------------------------------------------------------------------
+
+
+def test_concurrency_group省略時はNoneになる(manifest_file):
+    """When concurrency_group is omitted, task.concurrency_group is None."""
+    content = """\
+---
+clade_plan_version: "0.7"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.tasks[0].concurrency_group is None
+
+
+def test_concurrency_groupを文字列で指定できる(manifest_file):
+    """When concurrency_group is a non-empty string, it is stored on the task."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.7",
+        "name": "test",
+        "concurrency_limits": {"review-group": 2},
+        "tasks": [
+            {
+                "id": "review",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "concurrency_group": "review-group",
+            }
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.tasks[0].concurrency_group == "review-group"
+
+
+def test_concurrency_groupに空文字列を指定するとManifestError(manifest_file):
+    """concurrency_group set to an empty string raises ManifestError."""
+    content = """\
+---
+clade_plan_version: "0.7"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    concurrency_group: ""
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r"non-empty string"):
+        load_manifest(path)
+
+
+def test_concurrency_limits省略時は空辞書になる(manifest_file):
+    """When concurrency_limits is omitted, manifest.concurrency_limits is an empty dict."""
+    content = """\
+---
+clade_plan_version: "0.7"
+name: test
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.concurrency_limits == {}
+
+
+def test_concurrency_limitsを正しく指定できる(manifest_file):
+    """concurrency_limits with positive integer values is parsed correctly."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.7",
+        "name": "test",
+        "concurrency_limits": {"api-group": 3, "db-group": 1},
+        "tasks": [
+            {
+                "id": "task-a",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "concurrency_group": "api-group",
+            },
+            {
+                "id": "task-b",
+                "agent": "security-reviewer",
+                "read_only": True,
+                "concurrency_group": "db-group",
+            },
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.concurrency_limits == {"api-group": 3, "db-group": 1}
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [0, -1, -100],
+    ids=["zero", "negative_one", "negative_large"],
+)
+def test_concurrency_limitsの値が0以下でManifestError(bad_value, manifest_file):
+    """concurrency_limits value <= 0 raises ManifestError."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.7",
+        "name": "test",
+        "concurrency_limits": {"g": bad_value},
+        "tasks": [
+            {
+                "id": "review",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "concurrency_group": "g",
+            }
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r">= 1"):
+        load_manifest(path)
+
+
+def test_concurrency_limitsの値が整数でないときManifestError(manifest_file):
+    """concurrency_limits value that is not an integer raises ManifestError."""
+    content = """\
+---
+clade_plan_version: "0.7"
+name: test
+concurrency_limits:
+  g: "three"
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    concurrency_group: g
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r"integer"):
+        load_manifest(path)
+
+
+def test_concurrency_limitsがmapping以外でManifestError(manifest_file):
+    """concurrency_limits that is not a YAML mapping raises ManifestError."""
+    content = """\
+---
+clade_plan_version: "0.7"
+name: test
+concurrency_limits:
+  - g
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r"mapping"):
+        load_manifest(path)
+
+
+def test_concurrency_groupがconcurrency_limitsに未定義でManifestError(manifest_file):
+    """Task referencing an undefined concurrency_group raises ManifestError."""
+    content = """\
+---
+clade_plan_version: "0.7"
+name: test
+concurrency_limits:
+  other-group: 2
+tasks:
+  - id: review
+    agent: code-reviewer
+    read_only: true
+    concurrency_group: missing-group
+---
+"""
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r"missing-group"):
+        load_manifest(path)
+
+
+def test_concurrency_limitsで定義したグループをどのタスクも使っていない場合にwarning(
+    manifest_file, recwarn
+):
+    """Defined concurrency_limits group unused by any task triggers a UserWarning."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.7",
+        "name": "test",
+        "concurrency_limits": {"unused-group": 2},
+        "tasks": [
+            {"id": "review", "agent": "code-reviewer", "read_only": True},
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    load_manifest(path)
+    warning_messages = [str(w.message) for w in recwarn.list]
+    assert any(
+        "unused-group" in msg for msg in warning_messages
+    ), f"Expected warning about 'unused-group', got: {warning_messages}"
+
+
+def test_manifest_v07で正常にパースできる(manifest_file):
+    """Manifest with clade_plan_version 0.7 and concurrency fields parses successfully."""
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.7",
+        "name": "v07-test",
+        "concurrency_limits": {"review-group": 2},
+        "tasks": [
+            {
+                "id": "task-a",
+                "agent": "code-reviewer",
+                "read_only": True,
+                "concurrency_group": "review-group",
+            },
+            {
+                "id": "task-b",
+                "agent": "security-reviewer",
+                "read_only": True,
+                "concurrency_group": "review-group",
+            },
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    result = load_manifest(path)
+
+    assert result.clade_plan_version == "0.7"
+    assert result.name == "v07-test"
+    assert len(result.tasks) == 2
+    assert result.concurrency_limits == {"review-group": 2}
+    for task in result.tasks:
+        assert task.concurrency_group == "review-group"
