@@ -32,6 +32,11 @@ SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset(
 MAX_RETRY_DELAY_SEC: float = 3600.0
 MAX_RETRY_BACKOFF_FACTOR: float = 100.0
 
+# Maximum allowed value for a single concurrency_limits entry.
+# Values above this are almost certainly a misconfiguration; reject them to
+# avoid accidentally creating hundreds of semaphore permits.
+MAX_CONCURRENCY_LIMIT: int = 256
+
 # Maximum allowed length for a webhook URL (characters).
 _WEBHOOK_URL_MAX_LENGTH: int = 2048
 
@@ -989,11 +994,17 @@ def _parse_concurrency_limits(raw: object, tasks: tuple[Task, ...]) -> dict[str,
             limit = int(value)  # type: ignore[call-overload]
         except (TypeError, ValueError) as exc:
             raise ManifestError(
-                f"'concurrency_limits.{group}' must be an integer, got {value!r}."
+                f"'concurrency_limits[{group!r}]' must be a positive integer,"
+                f" got {type(value).__name__}: {value!r}."
             ) from exc
         if limit < 1:
             raise ManifestError(
                 f"'concurrency_limits.{group}' must be >= 1, got {limit!r}."
+            )
+        if limit > MAX_CONCURRENCY_LIMIT:
+            raise ManifestError(
+                f"'concurrency_limits.{group}' must be <= {MAX_CONCURRENCY_LIMIT},"
+                f" got {limit!r}."
             )
         limits[group] = limit
 

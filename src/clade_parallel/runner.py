@@ -19,6 +19,7 @@ import traceback
 import urllib.error
 import urllib.request
 import uuid
+import warnings
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -1486,6 +1487,7 @@ def format_dry_run(manifest: Manifest, *, max_workers: int) -> str:
         if task.depends_on:
             parts.append(f"depends={list(task.depends_on)}")
         if task.concurrency_group is not None:
+            # "?" fallback: group set but not in limits (caught by manifest validation)
             limit = manifest.concurrency_limits.get(task.concurrency_group, "?")
             parts.append(f"group={task.concurrency_group}(limit={limit})")
         lines.append("  ".join(parts))
@@ -1615,6 +1617,29 @@ def run_manifest(
         group: threading.Semaphore(limit)
         for group, limit in manifest.concurrency_limits.items()
     }
+
+    # Warn when a concurrency group's limit is lower than max_workers AND the
+    # group has at least as many tasks as max_workers.  In such a scenario all
+    # worker threads can be blocked waiting for the semaphore, causing the
+    # entire run to stall with no forward progress.
+    task_count_by_group: dict[str, int] = {}
+    for t in tasks:
+        if t.concurrency_group is not None:
+            task_count_by_group[t.concurrency_group] = (
+                task_count_by_group.get(t.concurrency_group, 0) + 1
+            )
+    for group, limit in manifest.concurrency_limits.items():
+        task_count = task_count_by_group.get(group, 0)
+        if limit < workers and task_count >= workers:
+            warnings.warn(
+                f"Concurrency group '{group}' has limit {limit} but"
+                f" {task_count} tasks and --max-workers={workers}."
+                " If all worker slots are occupied waiting for this"
+                " group's semaphore, throughput may degrade significantly."
+                f" Consider setting --max-workers <= {limit} or"
+                " splitting tasks across groups.",
+                stacklevel=2,
+            )
 
     # ------------------------------------------------------------------
     # Build execute_fn with state-file update on success

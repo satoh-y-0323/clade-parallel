@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/satoh-y-0323/clade-parallel/blob/main/schema/manifest.schema.json",
+  "$id": "clade-parallel-manifest",
   "title": "clade-parallel Manifest",
   "description": "Schema for clade-parallel manifest files (YAML frontmatter in Markdown).",
   "type": "object",
@@ -30,11 +30,15 @@
     },
     "concurrency_limits": {
       "type": "object",
-      "description": "Maximum number of concurrently running tasks per named concurrency group.",
-      "additionalProperties": {
-        "type": "integer",
-        "minimum": 1
-      }
+      "description": "Per-group concurrency caps. Keys must be non-empty strings; values must be positive integers.",
+      "patternProperties": {
+        "^.+$": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of concurrent tasks in this group"
+        }
+      },
+      "additionalProperties": false
     },
     "on_complete": {
       "$ref": "#/definitions/WebhookConfig",
