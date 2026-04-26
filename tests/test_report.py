@@ -355,3 +355,42 @@ def test_シンボリックリンクのreport_pathはCladeParallelErrorを送出
             started_at=_STARTED_AT,
             finished_at=_FINISHED_AT,
         )
+
+
+# ---------------------------------------------------------------------------
+# Markdown: resumed 表記
+# ---------------------------------------------------------------------------
+
+
+def test_Markdown_resumed0件の場合はresumedが省略される(tmp_path: Path):
+    """Markdown Results line omits '/ N resumed' when resumed == 0."""
+    run_result = _make_run_result(
+        _make_task_result("task-a", returncode=0),
+        _make_task_result("task-b", skipped=True),
+    )
+    md = _generate_md(tmp_path, run_result)
+
+    assert "resumed" not in md
+
+
+def test_Markdown_resumed1件以上の場合はresumedが別途表示される(tmp_path: Path):
+    """Markdown Results line shows '/ N resumed' when resumed >= 1."""
+    run_result = _make_run_result(
+        _make_task_result("task-a", returncode=0),
+        _make_task_result("task-b", resumed=True),
+    )
+    md = _generate_md(tmp_path, run_result)
+
+    assert "1 resumed" in md
+    # skipped count should be 0 (resumed is displayed separately)
+    assert "0 skipped" in md
+
+
+def test_JSON_内部フィールド_resumedがJSON出力に含まれない(tmp_path: Path):
+    """_resumed internal field is not included in the public JSON output."""
+    run_result = _make_run_result(
+        _make_task_result("task-a", resumed=True),
+    )
+    data = _generate_json(tmp_path, run_result)
+
+    assert "_resumed" not in data

@@ -94,11 +94,13 @@ def _build_report_dict(
         A dictionary matching the documented JSON report schema.
     """
     results = run_result.results
+    # Pre-compute statuses once to avoid redundant walks of the task list.
+    statuses = [_task_status(r) for r in results]
     total = len(results)
-    succeeded = sum(1 for r in results if _task_status(r) == "succeeded")
-    failed = sum(1 for r in results if _task_status(r) == "failed")
-    skipped = sum(1 for r in results if _task_status(r) == "skipped")
-    resumed = sum(1 for r in results if _task_status(r) == "resumed")
+    succeeded = statuses.count("succeeded")
+    failed = statuses.count("failed")
+    skipped = statuses.count("skipped")
+    resumed = statuses.count("resumed")
 
     duration_sec = (finished_at - started_at).total_seconds()
 
@@ -110,7 +112,12 @@ def _build_report_dict(
         "total": total,
         "succeeded": succeeded,
         "failed": failed,
+        # skipped and resumed are merged into a single "skipped" bucket in the
+        # JSON schema for backward compatibility.
         "skipped": skipped + resumed,
+        # _resumed is an internal field used by _format_markdown to display
+        # the resumed count separately; it is not part of the public JSON schema.
+        "_resumed": resumed,
         "tasks": [_build_task_dict(r) for r in results],
     }
 
@@ -124,7 +131,9 @@ def _format_json(report_dict: dict[str, Any]) -> str:
     Returns:
         A UTF-8 JSON string with 2-space indentation and a trailing newline.
     """
-    return json.dumps(report_dict, ensure_ascii=False, indent=2) + "\n"
+    # Exclude internal fields (prefixed with "_") from the public JSON output.
+    public = {k: v for k, v in report_dict.items() if not k.startswith("_")}
+    return json.dumps(public, ensure_ascii=False, indent=2) + "\n"
 
 
 def _format_markdown(report_dict: dict[str, Any]) -> str:
@@ -142,7 +151,20 @@ def _format_markdown(report_dict: dict[str, Any]) -> str:
     duration_sec = report_dict["duration_sec"]
     succeeded = report_dict["succeeded"]
     failed = report_dict["failed"]
-    skipped = report_dict["skipped"]
+    # "skipped" in the dict is skipped+resumed (merged for JSON schema compat).
+    # "_resumed" carries the raw resumed count for Markdown display.
+    resumed = report_dict.get("_resumed", 0)
+    skipped = report_dict["skipped"] - resumed  # pure skipped (not resumed)
+
+    # Build the Results line: omit "/ N resumed" when resumed == 0.
+    results_parts = [
+        f"{succeeded} succeeded",
+        f"{failed} failed",
+        f"{skipped} skipped",
+    ]
+    if resumed:
+        results_parts.append(f"{resumed} resumed")
+    results_line = " / ".join(results_parts)
 
     lines: list[str] = [
         f"# Run Summary: {manifest_name}",
@@ -151,7 +173,7 @@ def _format_markdown(report_dict: dict[str, Any]) -> str:
         f"**Finished:** {finished_at}",
         f"**Duration:** {duration_sec}s",
         "",
-        f"## Results: {succeeded} succeeded / {failed} failed / {skipped} skipped",
+        f"## Results: {results_line}",
         "",
         "| Task | Agent | Status | Duration | Retries | Failure |",
         "|------|-------|--------|----------|---------|---------|",
@@ -227,6 +249,9 @@ def generate_report(
         )
 
     now = datetime.now(tz=timezone.utc)
+    # started_at / finished_at may be None when the runner raised an exception
+    # before it had a chance to record the wall-clock timestamps.  Fall back to
+    # "now" so the report can still be written without crashing.
     if started_at is None:
         started_at = now
     if finished_at is None:
