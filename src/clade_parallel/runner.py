@@ -1485,6 +1485,9 @@ def format_dry_run(manifest: Manifest, *, max_workers: int) -> str:
             parts.append("read_only")
         if task.depends_on:
             parts.append(f"depends={list(task.depends_on)}")
+        if task.concurrency_group is not None:
+            limit = manifest.concurrency_limits.get(task.concurrency_group, "?")
+            parts.append(f"group={task.concurrency_group}(limit={limit})")
         lines.append("  ".join(parts))
 
     n = len(tasks)
@@ -1606,14 +1609,36 @@ def run_manifest(
         resumed_task_ids = frozenset()
 
     # ------------------------------------------------------------------
+    # Build concurrency-group semaphores (one per group, from manifest limits)
+    # ------------------------------------------------------------------
+    group_semaphores: dict[str, threading.Semaphore] = {
+        group: threading.Semaphore(limit)
+        for group, limit in manifest.concurrency_limits.items()
+    }
+
+    # ------------------------------------------------------------------
     # Build execute_fn with state-file update on success
     # ------------------------------------------------------------------
     claude_exe = claude_executable
 
     def execute_fn(task: Task) -> TaskResult:
-        result = _execute_with_retry(
-            task, claude_exe, git_root=git_root, log_config=log_config
+        # Acquire the group semaphore before executing, if the task belongs to
+        # a concurrency group.  Released in a finally block so that a failure
+        # or timeout never leaks a permit.
+        sem: threading.Semaphore | None = (
+            group_semaphores.get(task.concurrency_group)
+            if task.concurrency_group is not None
+            else None
         )
+        if sem is not None:
+            sem.acquire()
+        try:
+            result = _execute_with_retry(
+                task, claude_exe, git_root=git_root, log_config=log_config
+            )
+        finally:
+            if sem is not None:
+                sem.release()
         if result.ok and run_state is not None:
             mark_task_completed(run_state, task.id, manifest_path)
         return result
