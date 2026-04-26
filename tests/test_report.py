@@ -59,7 +59,9 @@ def _make_run_result(*task_results: TaskResult) -> RunResult:
     return RunResult(results=tuple(task_results))
 
 
-def _generate_json(tmp_path: Path, run_result: RunResult, filename: str = "report.json") -> dict:
+def _generate_json(
+    tmp_path: Path, run_result: RunResult, filename: str = "report.json"
+) -> dict:
     """Generate a JSON report and return its parsed content."""
     report_path = tmp_path / filename
     generate_report(
@@ -72,7 +74,9 @@ def _generate_json(tmp_path: Path, run_result: RunResult, filename: str = "repor
     return json.loads(report_path.read_text(encoding="utf-8"))
 
 
-def _generate_md(tmp_path: Path, run_result: RunResult, filename: str = "report.md") -> str:
+def _generate_md(
+    tmp_path: Path, run_result: RunResult, filename: str = "report.md"
+) -> str:
     """Generate a Markdown report and return its text content."""
     report_path = tmp_path / filename
     generate_report(
@@ -109,10 +113,12 @@ def test_JSON_全タスク成功時のトップレベルフィールドが正し
 def test_JSON_失敗スキップresumedタスク混在時の集計が正しい(tmp_path: Path):
     """JSON: counts are correct when failed / skipped / resumed tasks are mixed."""
     run_result = _make_run_result(
-        _make_task_result("task-a", returncode=0),                    # succeeded
-        _make_task_result("task-b", returncode=1, failure_category="transient"),  # failed
-        _make_task_result("task-c", skipped=True),                    # skipped
-        _make_task_result("task-d", resumed=True),                    # resumed (→ skipped bucket)
+        _make_task_result("task-a", returncode=0),  # succeeded
+        _make_task_result(
+            "task-b", returncode=1, failure_category="transient"
+        ),  # failed
+        _make_task_result("task-c", skipped=True),  # skipped
+        _make_task_result("task-d", resumed=True),  # resumed (→ skipped bucket)
     )
     data = _generate_json(tmp_path, run_result)
 
@@ -271,7 +277,9 @@ def test_拡張子なしファイル名はRunnerErrorを送出する(tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-def test_status_returncode0かつskipped_Falseかつresumed_Falseはsucceeded(tmp_path: Path):
+def test_status_returncode0かつskipped_Falseかつresumed_Falseはsucceeded(
+    tmp_path: Path,
+):
     """returncode=0, skipped=False, resumed=False → status is 'succeeded'."""
     run_result = _make_run_result(
         _make_task_result("task-a", returncode=0, skipped=False, resumed=False)
