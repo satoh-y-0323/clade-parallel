@@ -6,13 +6,14 @@ Covers JSON output, Markdown output, status classification, and error cases.
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from clade_parallel._exceptions import CladeParallelError
-from clade_parallel.report import generate_report
+from clade_parallel.report import _md_escape, generate_report
 from clade_parallel.runner import RunResult, TaskResult
 
 # ---------------------------------------------------------------------------
@@ -334,9 +335,6 @@ def test_status_resumed_TrueはResumed(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-import sys  # noqa: E402  (import after tests for grouping clarity)
-
-
 def test_シンボリックリンクのreport_pathはCladeParallelErrorを送出する(tmp_path: Path):
     """generate_report raises CladeParallelError when report_path is a symlink."""
     if sys.platform == "win32":
@@ -394,3 +392,42 @@ def test_JSON_内部フィールド_resumedがJSON出力に含まれない(tmp_p
     data = _generate_json(tmp_path, run_result)
 
     assert "_resumed" not in data
+
+
+# ---------------------------------------------------------------------------
+# _md_escape: Markdown table cell pipe escaping
+# ---------------------------------------------------------------------------
+
+
+def test_md_escape_パイプ文字がエスケープされる():
+    """_md_escape replaces '|' with '\\|'."""
+    assert _md_escape("agent|name") == r"agent\|name"
+    assert _md_escape("|leading") == r"\|leading"
+    assert _md_escape("trailing|") == r"trailing\|"
+    assert _md_escape("a|b|c") == r"a\|b\|c"
+
+
+def test_md_escape_パイプなし文字列はそのまま返される():
+    """_md_escape returns the string unchanged when no '|' is present."""
+    assert _md_escape("general-purpose") == "general-purpose"
+    assert _md_escape("task-a") == "task-a"
+    assert _md_escape("") == ""
+
+
+def test_Markdown_agentにパイプが含まれる場合テーブルでエスケープされる(
+    tmp_path: Path,
+):
+    """Markdown table escapes '|' in the agent field to avoid breaking the table."""
+    run_result = _make_run_result(
+        _make_task_result("task-a", agent="my|agent"),
+    )
+    md = _generate_md(tmp_path, run_result)
+
+    # The pipe in the agent name must be escaped in the table row.
+    assert r"my\|agent" in md
+    # The raw unescaped form must NOT appear in the table rows (only in headers/
+    # metadata which don't use the agent field directly).
+    # Check the task row specifically: lines starting with "| task-a"
+    task_lines = [line for line in md.splitlines() if line.startswith("| task-a")]
+    assert len(task_lines) == 1
+    assert r"my\|agent" in task_lines[0]

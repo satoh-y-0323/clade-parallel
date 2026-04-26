@@ -36,6 +36,18 @@ _SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({".json", ".md", ".markdown"})
 # ---------------------------------------------------------------------------
 
 
+def _md_escape(text: str) -> str:
+    """Escape pipe characters for Markdown table cells.
+
+    Args:
+        text: Raw cell content that may contain ``|`` characters.
+
+    Returns:
+        The input string with every ``|`` replaced by ``\\|``.
+    """
+    return text.replace("|", r"\|")
+
+
 def _task_status(result: TaskResult) -> str:
     """Return the canonical status string for *result*.
 
@@ -91,7 +103,12 @@ def _build_report_dict(
         finished_at: Wall-clock timestamp when the run finished.
 
     Returns:
-        A dictionary matching the documented JSON report schema.
+        A dictionary matching the documented JSON report schema, plus the
+        following internal field:
+
+        - ``_resumed`` (int): Number of tasks whose status is ``"resumed"``.
+          Prefixed with an underscore to indicate it is an internal field
+          excluded from the public JSON output (see :func:`_format_json`).
     """
     results = run_result.results
     # Pre-compute statuses once to avoid redundant walks of the task list.
@@ -196,7 +213,7 @@ def _format_markdown(report_dict: dict[str, Any]) -> str:
             failure_cell = "—" if fc == "none" else fc  # —
 
         lines.append(
-            f"| {task['id']} | {task['agent']} | {label}"
+            f"| {_md_escape(task['id'])} | {_md_escape(task['agent'])} | {label}"
             f" | {duration_cell} | {retries_cell} | {failure_cell} |"
         )
 
