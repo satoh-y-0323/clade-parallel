@@ -327,3 +327,31 @@ def test_status_resumed_TrueはResumed(tmp_path: Path):
     )
     data = _generate_json(tmp_path, run_result)
     assert data["tasks"][0]["status"] == "resumed"
+
+
+# ---------------------------------------------------------------------------
+# Security: symlink guard
+# ---------------------------------------------------------------------------
+
+
+import sys  # noqa: E402  (import after tests for grouping clarity)
+
+
+def test_シンボリックリンクのreport_pathはCladeParallelErrorを送出する(tmp_path: Path):
+    """generate_report raises CladeParallelError when report_path is a symlink."""
+    if sys.platform == "win32":
+        pytest.skip("symlink creation may require elevated privileges on Windows")
+    target = tmp_path / "real_report.json"
+    target.write_text("{}", encoding="utf-8")
+    symlink = tmp_path / "link_report.json"
+    symlink.symlink_to(target)
+
+    run_result = _make_run_result(_make_task_result())
+    with pytest.raises(CladeParallelError, match="symbolic link"):
+        generate_report(
+            run_result,
+            symlink,
+            manifest_name="test-manifest",
+            started_at=_STARTED_AT,
+            finished_at=_FINISHED_AT,
+        )

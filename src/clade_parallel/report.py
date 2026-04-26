@@ -215,9 +215,17 @@ def generate_report(
             UTC time when omitted.
 
     Raises:
-        RunnerError: If the file extension is not supported, or if the file
-            cannot be written (e.g., permission denied).
+        CladeParallelError: If *report_path* is a symbolic link, if the file
+            extension is not supported, or if the file cannot be written
+            (e.g., permission denied).
     """
+    # Guard against symlink attacks before any file I/O.
+    if report_path.is_symlink():
+        raise CladeParallelError(
+            "--report path is a symbolic link; "
+            "refusing to write to avoid symlink attacks."
+        )
+
     now = datetime.now(tz=timezone.utc)
     if started_at is None:
         started_at = now
@@ -249,5 +257,5 @@ def generate_report(
         report_path.write_text(content, encoding="utf-8")
     except OSError as exc:
         raise CladeParallelError(
-            f"Failed to write report to {report_path}: {exc}"
+            "Failed to write report: permission denied or I/O error."
         ) from exc
