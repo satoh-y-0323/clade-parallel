@@ -17,14 +17,14 @@ import pytest
 from clade_parallel.manifest import Manifest, Task, load_manifest
 from clade_parallel.runner import (
     _DEFAULT_MAX_WORKERS,  # noqa: PLC2701
-    _Dashboard,            # noqa: PLC2701
-    _RunState,             # noqa: PLC2701
-    _format_tool_action,   # noqa: PLC2701
-    _sanitize_for_display,  # noqa: PLC2701
-    _stream_json_reader,   # noqa: PLC2701
     RunnerError,
     RunResult,
     TaskResult,
+    _Dashboard,  # noqa: PLC2701
+    _format_tool_action,  # noqa: PLC2701
+    _RunState,  # noqa: PLC2701
+    _sanitize_for_display,  # noqa: PLC2701
+    _stream_json_reader,  # noqa: PLC2701
     run_manifest,
 )
 
@@ -3129,3 +3129,13 @@ def test_sanitize_for_display_max_len以上は切り詰める():
     result = _sanitize_for_display("a" * 60, max_len=10)
     assert result == "a" * 7 + "..."
     assert len(result) == 10
+
+
+def test_sanitize_for_display_OSCシーケンスを除去する():
+    # OSC title-set: ESC ] 0 ; title BEL — must not reach the terminal
+    assert _sanitize_for_display("\x1b]0;evil title\x07normal") == "normal"
+
+
+def test_sanitize_for_display_OSC_ESC_backslash終端を除去する():
+    # OSC with ST (ESC \) terminator instead of BEL
+    assert _sanitize_for_display("\x1b]0;evil\x1b\\normal") == "normal"

@@ -331,7 +331,8 @@ class _Dashboard:
         # before calling _do_render directly, so no concurrent access occurs.
         self._lines_rendered = len(lines)
 
-    def _build_lines(self, *, final: bool, width: int) -> list[str]:  # width reserved for future per-line truncation
+    def _build_lines(self, *, final: bool, width: int) -> list[str]:
+        # width is reserved for future per-line truncation (currently applied in _do_render)
         lines: list[str] = []
         now = time.perf_counter()
 
@@ -340,7 +341,10 @@ class _Dashboard:
             n_failed = sum(1 for s in self._states.values() if s.status == "failed")
             n_total = len(self._task_ids)
             if n_failed > 0:
-                header = f"clade-parallel done ({n_complete}/{n_total} succeeded, {n_failed} failed)"
+                header = (
+                    f"clade-parallel done"
+                    f" ({n_complete}/{n_total} succeeded, {n_failed} failed)"
+                )
             else:
                 header = f"clade-parallel done ({n_complete}/{n_total} succeeded)"
         else:
@@ -376,7 +380,10 @@ class _Dashboard:
 
             if state.status == "complete":
                 if state.tokens_out > 0:
-                    action = f"complete!! {state.elapsed_sec:.0f}s  ({state.tokens_out:,} tokens)"
+                    action = (
+                        f"complete!! {state.elapsed_sec:.0f}s"
+                        f"  ({state.tokens_out:,} tokens)"
+                    )
                 else:
                     action = f"complete!! {state.elapsed_sec:.0f}s"
             elif state.status == "failed":
@@ -535,9 +542,18 @@ def _sanitize_for_display(text: str, max_len: int = _TOOL_ACTION_MAX_LEN) -> str
     """Remove ANSI escapes and control characters from user-visible terminal output.
 
     Prevents ANSI injection from LLM-generated tool inputs (file paths, commands)
-    corrupting the dashboard display.
+    corrupting the dashboard display.  Handles CSI (ESC [), OSC (ESC ]), and
+    other single-char ESC sequences so that terminal-title hijacking via OSC is
+    also blocked.
     """
+    # CSI sequences: ESC [ ... final_byte  (e.g. \x1b[31m, \x1b[2J)
     text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+    # OSC sequences: ESC ] ... BEL  or  ESC ] ... ESC \  (e.g. title-set \x1b]0;title\x07)
+    text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", text)
+    # Other two-char ESC sequences (ESC + any single printable/control char)
+    text = re.sub(r"\x1b.", "", text)
+    # Lone ESC that didn't match any sequence above
+    text = text.replace("\x1b", "")
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
     if len(text) > max_len:
         text = text[:max_len - 3] + "..."
@@ -1219,7 +1235,7 @@ def _watchdog_loop(
                     file=sys.stderr,
                     flush=True,
                 )
-            elif idle < _PROGRESS_INTERVAL_SEC:
+            elif received and idle < _PROGRESS_INTERVAL_SEC:
                 # Recent output within the interval — still actively producing output.
                 print(f"[{task.id}] running...", file=sys.stderr, flush=True)
             else:
