@@ -16,4 +16,4 @@ if (isNaN(numA) || isNaN(numB)) {
   process.exit(1);
 }
 
-console.log(numA * numB);
+console.log(`${numA} * ${numB} = ${numA * numB}`);
