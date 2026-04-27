@@ -332,7 +332,7 @@ class _Dashboard:
         self._lines_rendered = len(lines)
 
     def _build_lines(self, *, final: bool, width: int) -> list[str]:
-        # width is reserved for future per-line truncation (currently applied in _do_render)
+        # width: reserved for future per-line truncation; applied in _do_render for now
         lines: list[str] = []
         now = time.perf_counter()
 
@@ -548,13 +548,15 @@ def _sanitize_for_display(text: str, max_len: int = _TOOL_ACTION_MAX_LEN) -> str
     """
     # CSI sequences: ESC [ ... final_byte  (e.g. \x1b[31m, \x1b[2J)
     text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
-    # OSC sequences: ESC ] ... BEL  or  ESC ] ... ESC \  (e.g. title-set \x1b]0;title\x07)
+    # OSC: ESC ] ... BEL or ESC ] ... ESC \  (e.g. terminal title-set \x1b]0;title\x07)
     text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", text)
     # Other two-char ESC sequences (ESC + any single printable/control char)
     text = re.sub(r"\x1b.", "", text)
     # Lone ESC that didn't match any sequence above
     text = text.replace("\x1b", "")
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    # Remove remaining control chars; keep \t (\x09) and \n (\x0a) only.
+    # \x0d (CR) is also removed — it would overwrite the current terminal line.
+    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
     if len(text) > max_len:
         text = text[:max_len - 3] + "..."
     return text

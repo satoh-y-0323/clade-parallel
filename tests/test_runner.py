@@ -3139,3 +3139,8 @@ def test_sanitize_for_display_OSCシーケンスを除去する():
 def test_sanitize_for_display_OSC_ESC_backslash終端を除去する():
     # OSC with ST (ESC \) terminator instead of BEL
     assert _sanitize_for_display("\x1b]0;evil\x1b\\normal") == "normal"
+
+
+def test_sanitize_for_display_CRを除去する():
+    # CR (\r) must be stripped to prevent terminal line overwrite
+    assert _sanitize_for_display("safe\revil") == "safeevil"
