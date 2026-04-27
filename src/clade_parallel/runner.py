@@ -320,12 +320,21 @@ class _Dashboard:
         width = max(shutil.get_terminal_size(fallback=(80, 24)).columns, 20)
         with self._lock:
             lines = self._build_lines(final=final, width=width)
-        out = sys.stderr
+        chunks: list[str] = []
         if self._lines_rendered > 0:
-            out.write(f"\033[{self._lines_rendered}A")
+            chunks.append(f"\033[{self._lines_rendered}A")
         for line in lines:
-            out.write(f"\033[2K{line[:width]}\n")
-        out.flush()
+            chunks.append(f"\033[2K{line[:width]}\n")
+        payload = "".join(chunks)
+        # Write as UTF-8 bytes to bypass the platform's default encoding
+        # (e.g. cp932 on Japanese Windows) which may not support all Unicode chars.
+        buf = getattr(sys.stderr, "buffer", None)
+        if buf is not None:
+            buf.write(payload.encode("utf-8"))
+            buf.flush()
+        else:
+            sys.stderr.write(payload)
+            sys.stderr.flush()
         # _lines_rendered is only written here and read in the same thread
         # (_render_loop or stop→_do_render).  stop() joins the render thread
         # before calling _do_render directly, so no concurrent access occurs.
