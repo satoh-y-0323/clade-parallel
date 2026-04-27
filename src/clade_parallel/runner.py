@@ -1287,16 +1287,9 @@ def _run_with_progress(
     lines_stderr: list[str] = []
     state = _RunState(last_output_ts=start, has_received_output=False)
 
-    if dashboard is not None and dashboard.enabled:
-        stdout_thread = threading.Thread(
-            target=_stream_json_reader,
-            args=(proc.stdout, lines_stdout, state, task.id, dashboard),
-            daemon=True,
-        )
-    else:
-        stdout_thread = threading.Thread(
-            target=_stream_reader, args=(proc.stdout, lines_stdout, state), daemon=True
-        )
+    stdout_thread = threading.Thread(
+        target=_stream_reader, args=(proc.stdout, lines_stdout, state), daemon=True
+    )
     stderr_thread = threading.Thread(
         target=_stream_reader, args=(proc.stderr, lines_stderr, state), daemon=True
     )
@@ -1351,8 +1344,6 @@ def _execute_task(
             is False but ``git_root`` is None, or if worktree creation fails.
     """
     cmd = [claude_exe, _CLAUDE_PROMPT_FLAG, task.prompt]
-    if dashboard is not None and dashboard.enabled:
-        cmd += ["--output-format", "stream-json"]
     env = {**os.environ, **task.env}
 
     # read_only tasks enter a silent synthesis phase after reading files, so
