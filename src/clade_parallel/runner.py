@@ -257,8 +257,13 @@ class _Dashboard:
     need to guard with ``if dashboard.enabled``.
     """
 
-    def __init__(self, task_ids: list[str], *, enabled: bool) -> None:
+    def __init__(self, task_ids: list[str], *, enabled: bool, live_renders: bool = True) -> None:
         self._enabled = enabled
+        # When False, the render loop skips intermediate frames and only stop()
+        # prints the final state.  Set to False when stderr is not a real TTY
+        # so that ANSI cursor-movement codes don't appear as literal text in
+        # captured output (e.g. CI logs, Claude Code ! command).
+        self._live_renders = live_renders
         self._task_ids: list[str] = list(task_ids)
         self._states: dict[str, _TaskDisplayState] = {
             tid: _TaskDisplayState(task_id=tid) for tid in task_ids
@@ -318,6 +323,11 @@ class _Dashboard:
     # ------------------------------------------------------------------
 
     def _render_loop(self) -> None:
+        if not self._live_renders:
+            # Non-TTY forced mode: skip intermediate frames entirely.
+            # stop() will print the final state as plain text.
+            self._stop_event.wait()
+            return
         while not self._stop_event.is_set():
             # Wake immediately on state change; fall back to periodic redraw
             # for elapsed-time updates when tasks are running but silent.
@@ -1971,12 +1981,12 @@ def run_manifest(
     # ------------------------------------------------------------------
     claude_exe = claude_executable
 
-    _dash_enabled = (
-        sys.stderr.isatty() if dashboard_enabled is None else dashboard_enabled
-    )
+    _tty = sys.stderr.isatty()
+    _dash_enabled = _tty if dashboard_enabled is None else dashboard_enabled
     dashboard = _Dashboard(
         [t.id for t in tasks],
         enabled=_dash_enabled,
+        live_renders=_tty,  # intermediate frames only when stderr is a real TTY
     )
     dashboard.start()
 
