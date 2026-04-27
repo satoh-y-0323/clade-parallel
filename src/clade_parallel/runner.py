@@ -231,12 +231,17 @@ class _RunState:
     kill_reason: Literal["total", "idle"] | None = None
 
 
+_TaskStatus = Literal[
+    "waiting", "starting_up", "running", "complete", "failed", "skipped", "resumed"
+]
+
+
 @dataclass
 class _TaskDisplayState:
     """Per-task mutable display state for _Dashboard."""
 
     task_id: str
-    status: str = "waiting"  # waiting/starting_up/running/complete/failed/skipped/resumed
+    status: _TaskStatus = "waiting"
     current_action: str = ""
     tokens_out: int = 0
     start_ts: float = 0.0
@@ -312,7 +317,7 @@ class _Dashboard:
             self._do_render()
 
     def _do_render(self, final: bool = False) -> None:
-        width = shutil.get_terminal_size(fallback=(80, 24)).columns
+        width = max(shutil.get_terminal_size(fallback=(80, 24)).columns, 20)
         with self._lock:
             lines = self._build_lines(final=final, width=width)
         out = sys.stderr
@@ -321,9 +326,12 @@ class _Dashboard:
         for line in lines:
             out.write(f"\033[2K{line[:width]}\n")
         out.flush()
+        # _lines_rendered is only written here and read in the same thread
+        # (_render_loop or stop→_do_render).  stop() joins the render thread
+        # before calling _do_render directly, so no concurrent access occurs.
         self._lines_rendered = len(lines)
 
-    def _build_lines(self, *, final: bool, width: int) -> list[str]:  # noqa: ARG002
+    def _build_lines(self, *, final: bool, width: int) -> list[str]:  # width reserved for future per-line truncation
         lines: list[str] = []
         now = time.perf_counter()
 
@@ -332,11 +340,11 @@ class _Dashboard:
             n_failed = sum(1 for s in self._states.values() if s.status == "failed")
             n_total = len(self._task_ids)
             if n_failed > 0:
-                header = f"clade-parallel 完了 ({n_complete}/{n_total} 成功, {n_failed} 失敗)"
+                header = f"clade-parallel done ({n_complete}/{n_total} succeeded, {n_failed} failed)"
             else:
-                header = f"clade-parallel 完了 ({n_complete}/{n_total} 成功)"
+                header = f"clade-parallel done ({n_complete}/{n_total} succeeded)"
         else:
-            header = "clade-parallel 稼働中"
+            header = "clade-parallel running"
         lines.append(header)
 
         for tid in self._task_ids:
@@ -523,6 +531,19 @@ def _dispatch_webhooks(
         )
 
 
+def _sanitize_for_display(text: str, max_len: int = _TOOL_ACTION_MAX_LEN) -> str:
+    """Remove ANSI escapes and control characters from user-visible terminal output.
+
+    Prevents ANSI injection from LLM-generated tool inputs (file paths, commands)
+    corrupting the dashboard display.
+    """
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    if len(text) > max_len:
+        text = text[:max_len - 3] + "..."
+    return text
+
+
 def _format_tool_action(tool_name: str, tool_input: dict[str, Any]) -> str:
     """Format a tool_use event into a short human-readable action string."""
     key_by_tool: dict[str, str] = {
@@ -535,12 +556,7 @@ def _format_tool_action(tool_name: str, tool_input: dict[str, Any]) -> str:
     }
     key = key_by_tool.get(tool_name)
     if key and key in tool_input:
-        arg = str(tool_input[key])
-        if len(arg) > _TOOL_ACTION_MAX_LEN:
-            if tool_name == "Bash":
-                arg = arg[:_TOOL_ACTION_MAX_LEN - 3] + "..."
-            else:
-                arg = "..." + arg[-(_TOOL_ACTION_MAX_LEN - 3):]
+        arg = _sanitize_for_display(str(tool_input[key]))
         return f"{tool_name}({arg})"
     return tool_name
 
@@ -1111,6 +1127,10 @@ def _stream_json_reader(
 ) -> None:
     """Read ``--output-format stream-json`` events and update *dashboard*.
 
+    Called only from ``_run_with_progress`` when the dashboard is enabled
+    (TTY detected, i.e. ``dashboard.enabled == True``).  In non-TTY mode
+    ``_stream_reader`` is used instead and this function is never invoked.
+
     Extracts the final result text into *result_buf* (one element at most).
     All other events drive dashboard state updates.
     """
@@ -1200,6 +1220,7 @@ def _watchdog_loop(
                     flush=True,
                 )
             elif idle < _PROGRESS_INTERVAL_SEC:
+                # Recent output within the interval — still actively producing output.
                 print(f"[{task.id}] running...", file=sys.stderr, flush=True)
             else:
                 print(
@@ -1283,7 +1304,11 @@ def _run_with_progress(
 
 
 def _execute_task(
-    task: Task, claude_exe: str, *, git_root: Path | None = None, dashboard: _Dashboard | None = None
+    task: Task,
+    claude_exe: str,
+    *,
+    git_root: Path | None = None,
+    dashboard: _Dashboard | None = None,
 ) -> TaskResult:
     """Execute a single agent task as a subprocess and return its result.
 
