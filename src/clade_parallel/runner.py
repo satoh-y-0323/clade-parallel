@@ -59,7 +59,9 @@ _PROGRESS_INTERVAL_SEC = 5
 _STARTUP_DISPLAY_SEC = 60
 _LAST_LINES_ON_TIMEOUT = 20
 _WEBHOOK_TIMEOUT_SEC = 10
-_DASHBOARD_RENDER_INTERVAL_SEC = 0.5
+# Maximum seconds between redraws when no state change occurs (elapsed-time refresh).
+# Immediate redraws are triggered by _Dashboard._dirty_event on any state change.
+_DASHBOARD_IDLE_RENDER_SEC = _PROGRESS_INTERVAL_SEC
 _TOOL_ACTION_MAX_LEN = 45
 
 _PERMANENT_RETURNCODES: frozenset[int] = frozenset({2, 126, 127})
@@ -264,6 +266,7 @@ class _Dashboard:
         self._lock = threading.Lock()
         self._lines_rendered: int = 0
         self._stop_event = threading.Event()
+        self._dirty_event = threading.Event()
         self._render_thread: threading.Thread | None = None
 
     @property
@@ -282,6 +285,7 @@ class _Dashboard:
         if not self._enabled:
             return
         self._stop_event.set()
+        self._dirty_event.set()  # wake render loop so it exits promptly
         if self._render_thread is not None:
             self._render_thread.join(timeout=2.0)
         self._do_render(final=True)
@@ -302,6 +306,7 @@ class _Dashboard:
                 kwargs["start_ts"] = time.perf_counter()
             for k, v in kwargs.items():
                 setattr(state, k, v)
+        self._dirty_event.set()  # wake render loop for immediate redraw
 
     def print_line(self, message: str) -> None:
         """Emit a fallback progress line when dashboard is disabled."""
@@ -313,7 +318,13 @@ class _Dashboard:
     # ------------------------------------------------------------------
 
     def _render_loop(self) -> None:
-        while not self._stop_event.wait(timeout=_DASHBOARD_RENDER_INTERVAL_SEC):
+        while not self._stop_event.is_set():
+            # Wake immediately on state change; fall back to periodic redraw
+            # for elapsed-time updates when tasks are running but silent.
+            self._dirty_event.wait(timeout=_DASHBOARD_IDLE_RENDER_SEC)
+            if self._stop_event.is_set():
+                return
+            self._dirty_event.clear()
             self._do_render()
 
     def _do_render(self, final: bool = False) -> None:
