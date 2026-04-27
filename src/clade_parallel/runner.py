@@ -298,7 +298,16 @@ class _Dashboard:
             self._render_thread.join(timeout=2.0)
         self._do_render(final=True)
 
-    def update(self, task_id: str, **kwargs: Any) -> None:
+    def update(self, task_id: str, *, important: bool = True, **kwargs: Any) -> None:
+        """Update per-task display state.
+
+        Args:
+            task_id: ID of the task to update.
+            important: When True (default), wakes the render loop for immediate
+                redraw.  Pass False for routine watchdog ticks that should not
+                trigger extra renders in non-TTY mode.
+            **kwargs: Fields to set on the task's _TaskDisplayState.
+        """
         if not self._enabled:
             return
         with self._lock:
@@ -314,7 +323,8 @@ class _Dashboard:
                 kwargs["start_ts"] = time.perf_counter()
             for k, v in kwargs.items():
                 setattr(state, k, v)
-        self._dirty_event.set()  # wake render loop for immediate redraw
+        if important or self._live_renders:
+            self._dirty_event.set()  # wake render loop for immediate redraw
 
     def print_line(self, message: str) -> None:
         """Emit a fallback progress line when dashboard is disabled."""
@@ -1270,9 +1280,9 @@ def _watchdog_loop(
 
         if dashboard is not None and dashboard.enabled:
             if not received and total < _STARTUP_DISPLAY_SEC:
-                dashboard.update(task.id, status="starting_up")
+                dashboard.update(task.id, status="starting_up", important=False)
             elif idle >= _PROGRESS_INTERVAL_SEC:
-                dashboard.update(task.id, current_action="")
+                dashboard.update(task.id, current_action="", important=False)
         else:
             if not received and total < _STARTUP_DISPLAY_SEC:
                 print(
