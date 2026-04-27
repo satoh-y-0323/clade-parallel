@@ -59,9 +59,12 @@ _PROGRESS_INTERVAL_SEC = 5
 _STARTUP_DISPLAY_SEC = 60
 _LAST_LINES_ON_TIMEOUT = 20
 _WEBHOOK_TIMEOUT_SEC = 10
-# Maximum seconds between redraws when no state change occurs (elapsed-time refresh).
+# Seconds between redraws when no state change occurs (elapsed-time refresh).
 # Immediate redraws are triggered by _Dashboard._dirty_event on any state change.
 _DASHBOARD_IDLE_RENDER_SEC = _PROGRESS_INTERVAL_SEC
+# In non-TTY mode, snapshots are appended (no cursor movement) at this interval.
+# Longer than _DASHBOARD_IDLE_RENDER_SEC to keep captured output concise.
+_DASHBOARD_NONLIVE_RENDER_SEC = 30
 _TOOL_ACTION_MAX_LEN = 45
 
 _PERMANENT_RETURNCODES: frozenset[int] = frozenset({2, 126, 127})
@@ -323,29 +326,38 @@ class _Dashboard:
     # ------------------------------------------------------------------
 
     def _render_loop(self) -> None:
-        if not self._live_renders:
-            # Non-TTY forced mode: skip intermediate frames entirely.
-            # stop() will print the final state as plain text.
-            self._stop_event.wait()
-            return
+        # TTY: render every _DASHBOARD_IDLE_RENDER_SEC (or immediately on state change).
+        # Non-TTY: append plain-text snapshots at _DASHBOARD_NONLIVE_RENDER_SEC intervals
+        # with a _PROGRESS_INTERVAL_SEC debounce so rapid state changes don't flood output.
+        interval = _DASHBOARD_IDLE_RENDER_SEC if self._live_renders else _DASHBOARD_NONLIVE_RENDER_SEC
+        last_render_ts = 0.0
         while not self._stop_event.is_set():
-            # Wake immediately on state change; fall back to periodic redraw
-            # for elapsed-time updates when tasks are running but silent.
-            self._dirty_event.wait(timeout=_DASHBOARD_IDLE_RENDER_SEC)
+            self._dirty_event.wait(timeout=interval)
             if self._stop_event.is_set():
                 return
             self._dirty_event.clear()
-            self._do_render()
+            now = time.perf_counter()
+            min_gap = 0.0 if self._live_renders else _PROGRESS_INTERVAL_SEC
+            if now - last_render_ts >= min_gap:
+                self._do_render()
+                last_render_ts = now
 
     def _do_render(self, final: bool = False) -> None:
         width = max(shutil.get_terminal_size(fallback=(80, 24)).columns, 20)
         with self._lock:
             lines = self._build_lines(final=final, width=width)
         chunks: list[str] = []
-        if self._lines_rendered > 0:
-            chunks.append(f"\033[{self._lines_rendered}A")
-        for line in lines:
-            chunks.append(f"\033[2K{line[:width]}\n")
+        if self._live_renders:
+            # TTY: move cursor up to overwrite the previous frame in-place.
+            if self._lines_rendered > 0:
+                chunks.append(f"\033[{self._lines_rendered}A")
+            for line in lines:
+                chunks.append(f"\033[2K{line[:width]}\n")
+        else:
+            # Non-TTY: append a plain-text snapshot (no cursor movement).
+            chunks.append("\n")
+            for line in lines:
+                chunks.append(f"{line[:width]}\n")
         payload = "".join(chunks)
         # Write as UTF-8 bytes to bypass the platform's default encoding
         # (e.g. cp932 on Japanese Windows) which may not support all Unicode chars.
@@ -359,7 +371,8 @@ class _Dashboard:
         # _lines_rendered is only written here and read in the same thread
         # (_render_loop or stop→_do_render).  stop() joins the render thread
         # before calling _do_render directly, so no concurrent access occurs.
-        self._lines_rendered = len(lines)
+        # In non-TTY (append) mode, keep at 0 so stop() never tries to move the cursor.
+        self._lines_rendered = len(lines) if self._live_renders else 0
 
     def _build_lines(self, *, final: bool, width: int) -> list[str]:
         # width: reserved for future per-line truncation; applied in _do_render for now
