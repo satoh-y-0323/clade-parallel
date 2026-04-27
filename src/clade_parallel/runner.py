@@ -1824,6 +1824,7 @@ def run_manifest(
     log_enabled: bool = True,
     resume: bool = False,
     report_path: Path | None = None,
+    dashboard_enabled: bool | None = None,
 ) -> RunResult:
     """Run all tasks in a manifest concurrently using a thread pool.
 
@@ -1845,6 +1846,9 @@ def run_manifest(
             the file extension (``.json``, ``.md``, or ``.markdown``).
             The parent directory is created if it does not exist.
             When None (default), no report is written.
+        dashboard_enabled: Override ANSI dashboard visibility. True = force on,
+            False = force off, None (default) = auto-detect via
+            ``sys.stderr.isatty()``.
 
     Returns:
         A RunResult containing a TaskResult for each task in the manifest.
@@ -1956,9 +1960,12 @@ def run_manifest(
     # ------------------------------------------------------------------
     claude_exe = claude_executable
 
+    _dash_enabled = (
+        sys.stderr.isatty() if dashboard_enabled is None else dashboard_enabled
+    )
     dashboard = _Dashboard(
         [t.id for t in tasks],
-        enabled=sys.stderr.isatty(),
+        enabled=_dash_enabled,
     )
     dashboard.start()
 

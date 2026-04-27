@@ -136,6 +136,24 @@ def _build_parser() -> argparse.ArgumentParser:
             "The parent directory is created if it does not exist."
         ),
     )
+    dashboard_group = run_parser.add_mutually_exclusive_group()
+    dashboard_group.add_argument(
+        "--dashboard",
+        action="store_true",
+        dest="force_dashboard",
+        default=False,
+        help=(
+            "Force-enable the ANSI progress dashboard "
+            "regardless of TTY detection (useful for testing)."
+        ),
+    )
+    dashboard_group.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        dest="no_dashboard",
+        default=False,
+        help="Disable the ANSI progress dashboard.",
+    )
 
     return parser
 
@@ -279,6 +297,13 @@ def main(argv: list[str] | None = None) -> int:
         print(format_dry_run(manifest, max_workers=effective_max_workers))
         return _EXIT_SUCCESS
 
+    if args.force_dashboard:
+        dashboard_enabled: bool | None = True
+    elif args.no_dashboard:
+        dashboard_enabled = False
+    else:
+        dashboard_enabled = None  # auto-detect via sys.stderr.isatty()
+
     try:
         run_result = run_manifest(
             manifest,
@@ -288,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
             log_dir=args.log_dir,
             resume=args.resume,
             report_path=args.report,
+            dashboard_enabled=dashboard_enabled,
         )
     except RunnerError as exc:
         print(f"RunnerError: {exc}", file=sys.stderr)
