@@ -59,6 +59,8 @@ _PROGRESS_INTERVAL_SEC = 5
 _STARTUP_DISPLAY_SEC = 60
 _LAST_LINES_ON_TIMEOUT = 20
 _WEBHOOK_TIMEOUT_SEC = 10
+_DASHBOARD_RENDER_INTERVAL_SEC = 0.5
+_TOOL_ACTION_MAX_LEN = 45
 
 _PERMANENT_RETURNCODES: frozenset[int] = frozenset({2, 126, 127})
 # Re-exported from manifest for use in the retry loop; single source of truth.
@@ -229,6 +231,166 @@ class _RunState:
     kill_reason: Literal["total", "idle"] | None = None
 
 
+@dataclass
+class _TaskDisplayState:
+    """Per-task mutable display state for _Dashboard."""
+
+    task_id: str
+    status: str = "waiting"  # waiting/starting_up/running/complete/failed/skipped/resumed
+    current_action: str = ""
+    tokens_out: int = 0
+    start_ts: float = 0.0
+    elapsed_sec: float = 0.0
+
+
+class _Dashboard:
+    """ANSI in-place progress dashboard for TTY terminals.
+
+    All public methods are no-ops when ``enabled`` is False so callers never
+    need to guard with ``if dashboard.enabled``.
+    """
+
+    def __init__(self, task_ids: list[str], *, enabled: bool) -> None:
+        self._enabled = enabled
+        self._task_ids: list[str] = list(task_ids)
+        self._states: dict[str, _TaskDisplayState] = {
+            tid: _TaskDisplayState(task_id=tid) for tid in task_ids
+        }
+        self._lock = threading.Lock()
+        self._lines_rendered: int = 0
+        self._stop_event = threading.Event()
+        self._render_thread: threading.Thread | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def start(self) -> None:
+        if not self._enabled:
+            return
+        self._render_thread = threading.Thread(
+            target=self._render_loop, daemon=True, name="clade-dashboard"
+        )
+        self._render_thread.start()
+
+    def stop(self) -> None:
+        if not self._enabled:
+            return
+        self._stop_event.set()
+        if self._render_thread is not None:
+            self._render_thread.join(timeout=2.0)
+        self._do_render(final=True)
+
+    def update(self, task_id: str, **kwargs: Any) -> None:
+        if not self._enabled:
+            return
+        with self._lock:
+            state = self._states.get(task_id)
+            if state is None:
+                return
+            if (
+                "status" in kwargs
+                and state.status == "waiting"
+                and kwargs["status"] != "waiting"
+                and "start_ts" not in kwargs
+            ):
+                kwargs["start_ts"] = time.perf_counter()
+            for k, v in kwargs.items():
+                setattr(state, k, v)
+
+    def print_line(self, message: str) -> None:
+        """Emit a fallback progress line when dashboard is disabled."""
+        if not self._enabled:
+            print(message, file=sys.stderr, flush=True)
+
+    # ------------------------------------------------------------------
+    # Internal rendering
+    # ------------------------------------------------------------------
+
+    def _render_loop(self) -> None:
+        while not self._stop_event.wait(timeout=_DASHBOARD_RENDER_INTERVAL_SEC):
+            self._do_render()
+
+    def _do_render(self, final: bool = False) -> None:
+        width = shutil.get_terminal_size(fallback=(80, 24)).columns
+        with self._lock:
+            lines = self._build_lines(final=final, width=width)
+        out = sys.stderr
+        if self._lines_rendered > 0:
+            out.write(f"\033[{self._lines_rendered}A")
+        for line in lines:
+            out.write(f"\033[2K{line[:width]}\n")
+        out.flush()
+        self._lines_rendered = len(lines)
+
+    def _build_lines(self, *, final: bool, width: int) -> list[str]:  # noqa: ARG002
+        lines: list[str] = []
+        now = time.perf_counter()
+
+        if final:
+            n_complete = sum(1 for s in self._states.values() if s.status == "complete")
+            n_failed = sum(1 for s in self._states.values() if s.status == "failed")
+            n_total = len(self._task_ids)
+            if n_failed > 0:
+                header = f"clade-parallel 完了 ({n_complete}/{n_total} 成功, {n_failed} 失敗)"
+            else:
+                header = f"clade-parallel 完了 ({n_complete}/{n_total} 成功)"
+        else:
+            header = "clade-parallel 稼働中"
+        lines.append(header)
+
+        for tid in self._task_ids:
+            state = self._states[tid]
+
+            if state.start_ts > 0:
+                elapsed = (
+                    state.elapsed_sec
+                    if state.status in ("complete", "failed")
+                    else now - state.start_ts
+                )
+                elapsed_str = f"  {elapsed:.0f}s"
+            else:
+                elapsed = 0.0
+                elapsed_str = ""
+
+            if state.status == "complete":
+                indicator = " ✓"
+            elif state.status == "failed":
+                indicator = " ✗"
+            elif state.status == "skipped":
+                indicator = " -"
+            elif state.status == "resumed":
+                indicator = " »"
+            else:
+                indicator = ""
+
+            lines.append(f"  [{tid}]{elapsed_str}{indicator}")
+
+            if state.status == "complete":
+                if state.tokens_out > 0:
+                    action = f"complete!! {state.elapsed_sec:.0f}s  ({state.tokens_out:,} tokens)"
+                else:
+                    action = f"complete!! {state.elapsed_sec:.0f}s"
+            elif state.status == "failed":
+                action = "failed"
+            elif state.status == "skipped":
+                action = "skipped (dependency failed)"
+            elif state.status == "resumed":
+                action = "already done"
+            elif state.status == "waiting":
+                action = "waiting..."
+            elif state.status == "starting_up":
+                action = f"starting up... {elapsed:.0f}s"
+            elif state.current_action:
+                action = state.current_action
+            else:
+                action = "thinking..."
+
+            lines.append(f"    └ {action}")
+
+        return lines
+
+
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Disable automatic redirect following for webhook requests.
 
@@ -361,6 +523,28 @@ def _dispatch_webhooks(
         )
 
 
+def _format_tool_action(tool_name: str, tool_input: dict[str, Any]) -> str:
+    """Format a tool_use event into a short human-readable action string."""
+    key_by_tool: dict[str, str] = {
+        "Bash": "command",
+        "Write": "file_path",
+        "Read": "file_path",
+        "Edit": "file_path",
+        "Glob": "pattern",
+        "Grep": "pattern",
+    }
+    key = key_by_tool.get(tool_name)
+    if key and key in tool_input:
+        arg = str(tool_input[key])
+        if len(arg) > _TOOL_ACTION_MAX_LEN:
+            if tool_name == "Bash":
+                arg = arg[:_TOOL_ACTION_MAX_LEN - 3] + "..."
+            else:
+                arg = "..." + arg[-(_TOOL_ACTION_MAX_LEN - 3):]
+        return f"{tool_name}({arg})"
+    return tool_name
+
+
 def _classify_failure(returncode: int | None, stderr: str) -> FailureCategory:
     """Classify a non-ok, non-timeout task outcome into retry buckets.
 
@@ -463,6 +647,7 @@ def _execute_with_retry(
     *,
     git_root: Path | None,
     log_config: LogConfig | None,
+    dashboard: _Dashboard | None = None,
 ) -> TaskResult:
     """Execute *task* with automatic retry on transient failures.
 
@@ -480,7 +665,7 @@ def _execute_with_retry(
         The final TaskResult with retry_count and failure_category set.
     """
     for attempt in range(task.max_retries + 1):
-        result = _execute_task(task, claude_exe, git_root=git_root)
+        result = _execute_task(task, claude_exe, git_root=git_root, dashboard=dashboard)
 
         if log_config is not None:
             _write_task_logs(
@@ -588,11 +773,15 @@ def _worktree_setup(git_root: Path, task: Task) -> tuple[Path, str]:
     # Copy settings.local.json into the worktree so that claude -p running
     # inside it inherits the same permissions as the main worktree.
     # The file is gitignored and therefore absent from the worktree checkout.
+    dest_dir = worktree_path / ".claude"
+    dest_dir.mkdir(parents=True, exist_ok=True)
     settings_local = git_root / ".claude" / "settings.local.json"
     if settings_local.exists():
-        dest_dir = worktree_path / ".claude"
-        dest_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(settings_local, dest_dir / "settings.local.json")
+    # Overwrite CLAUDE.md with an empty file so that worktree agents skip
+    # startup protocols (init-session, agent selection, etc.) that are only
+    # meaningful in interactive sessions.
+    (dest_dir / "CLAUDE.md").write_text("", encoding="utf-8")
 
     return worktree_path, branch_name
 
@@ -913,12 +1102,63 @@ def _stream_reader(stream: IO[str], buf: list[str], state: _RunState) -> None:
             state.has_received_output = True
 
 
+def _stream_json_reader(
+    stream: IO[str],
+    result_buf: list[str],
+    state: _RunState,
+    task_id: str,
+    dashboard: _Dashboard,
+) -> None:
+    """Read ``--output-format stream-json`` events and update *dashboard*.
+
+    Extracts the final result text into *result_buf* (one element at most).
+    All other events drive dashboard state updates.
+    """
+    for line in stream:
+        with state.lock:
+            state.last_output_ts = time.perf_counter()
+            state.has_received_output = True
+
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+
+        event_type = event.get("type", "")
+
+        if event_type == "assistant":
+            content = event.get("message", {}).get("content", [])
+            for block in content:
+                if block.get("type") == "tool_use":
+                    action = _format_tool_action(
+                        block.get("name", ""), block.get("input", {})
+                    )
+                    dashboard.update(task_id, current_action=action, status="running")
+                    break
+            else:
+                dashboard.update(task_id, current_action="", status="running")
+
+        elif event_type == "user":
+            dashboard.update(task_id, current_action="", status="running")
+
+        elif event_type == "result":
+            result_text = event.get("result", "")
+            result_buf.append(result_text)
+            tokens_out = event.get("usage", {}).get("output_tokens", 0)
+            if tokens_out:
+                dashboard.update(task_id, tokens_out=tokens_out)
+
+
 def _watchdog_loop(
     proc: subprocess.Popen[str],
     task: Task,
     start: float,
     effective_idle_timeout: int | None,
     state: _RunState,
+    dashboard: _Dashboard | None = None,
 ) -> None:
     """Watch *proc*, print progress, and kill it if a timeout is exceeded."""
     while True:
@@ -947,20 +1187,26 @@ def _watchdog_loop(
         idle = now - last_ts
         total = now - start
 
-        if not received and total < _STARTUP_DISPLAY_SEC:
-            print(
-                f"[{task.id}] starting up... {total:.0f}s",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif idle < _PROGRESS_INTERVAL_SEC:
-            print(f"[{task.id}] running...", file=sys.stderr, flush=True)
+        if dashboard is not None and dashboard.enabled:
+            if not received and total < _STARTUP_DISPLAY_SEC:
+                dashboard.update(task.id, status="starting_up")
+            elif idle >= _PROGRESS_INTERVAL_SEC:
+                dashboard.update(task.id, current_action="")
         else:
-            print(
-                f"[{task.id}] thinking... {idle:.0f}s",
-                file=sys.stderr,
-                flush=True,
-            )
+            if not received and total < _STARTUP_DISPLAY_SEC:
+                print(
+                    f"[{task.id}] starting up... {total:.0f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            elif idle < _PROGRESS_INTERVAL_SEC:
+                print(f"[{task.id}] running...", file=sys.stderr, flush=True)
+            else:
+                print(
+                    f"[{task.id}] thinking... {idle:.0f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
         if effective_idle_timeout is not None and idle >= effective_idle_timeout:
             with state.lock:
@@ -979,6 +1225,7 @@ def _run_with_progress(
     task: Task,
     start: float,
     effective_idle_timeout: int | None = None,
+    dashboard: _Dashboard | None = None,
 ) -> tuple[str, str, bool, Literal["total", "idle"] | None]:
     """Run *proc* to completion with progress reporting and dual timeout.
 
@@ -1001,15 +1248,22 @@ def _run_with_progress(
     lines_stderr: list[str] = []
     state = _RunState(last_output_ts=start, has_received_output=False)
 
-    stdout_thread = threading.Thread(
-        target=_stream_reader, args=(proc.stdout, lines_stdout, state), daemon=True
-    )
+    if dashboard is not None and dashboard.enabled:
+        stdout_thread = threading.Thread(
+            target=_stream_json_reader,
+            args=(proc.stdout, lines_stdout, state, task.id, dashboard),
+            daemon=True,
+        )
+    else:
+        stdout_thread = threading.Thread(
+            target=_stream_reader, args=(proc.stdout, lines_stdout, state), daemon=True
+        )
     stderr_thread = threading.Thread(
         target=_stream_reader, args=(proc.stderr, lines_stderr, state), daemon=True
     )
     watchdog_thread = threading.Thread(
         target=_watchdog_loop,
-        args=(proc, task, start, effective_idle_timeout, state),
+        args=(proc, task, start, effective_idle_timeout, state, dashboard),
         daemon=True,
     )
     stdout_thread.start()
@@ -1029,7 +1283,7 @@ def _run_with_progress(
 
 
 def _execute_task(
-    task: Task, claude_exe: str, *, git_root: Path | None = None
+    task: Task, claude_exe: str, *, git_root: Path | None = None, dashboard: _Dashboard | None = None
 ) -> TaskResult:
     """Execute a single agent task as a subprocess and return its result.
 
@@ -1054,6 +1308,8 @@ def _execute_task(
             is False but ``git_root`` is None, or if worktree creation fails.
     """
     cmd = [claude_exe, _CLAUDE_PROMPT_FLAG, task.prompt]
+    if dashboard is not None and dashboard.enabled:
+        cmd += ["--output-format", "stream-json"]
     env = {**os.environ, **task.env}
 
     # read_only tasks enter a silent synthesis phase after reading files, so
@@ -1076,6 +1332,8 @@ def _execute_task(
         effective_cwd = task.cwd
 
     start = time.perf_counter()
+    if dashboard is not None and dashboard.enabled:
+        dashboard.update(task.id, status="starting_up", start_ts=start)
     try:
         try:
             proc = subprocess.Popen(
@@ -1093,11 +1351,13 @@ def _execute_task(
 
         try:
             stdout, stderr, timed_out, timeout_reason = _run_with_progress(
-                proc, task, start, effective_idle_timeout
+                proc, task, start, effective_idle_timeout, dashboard
             )
             returncode: int | None = proc.returncode if not timed_out else None
         except Exception:
             duration_sec = time.perf_counter() - start
+            if dashboard is not None and dashboard.enabled:
+                dashboard.update(task.id, status="failed", elapsed_sec=duration_sec)
             return TaskResult(
                 task_id=task.id,
                 agent=task.agent,
@@ -1113,6 +1373,13 @@ def _execute_task(
             _worktree_cleanup(git_root, worktree_path)
 
     duration_sec = time.perf_counter() - start
+    if dashboard is not None and dashboard.enabled:
+        ok = returncode == 0 and not timed_out
+        dashboard.update(
+            task.id,
+            status="complete" if ok else "failed",
+            elapsed_sec=duration_sec,
+        )
     return TaskResult(
         task_id=task.id,
         agent=task.agent,
@@ -1646,6 +1913,12 @@ def run_manifest(
     # ------------------------------------------------------------------
     claude_exe = claude_executable
 
+    dashboard = _Dashboard(
+        [t.id for t in tasks],
+        enabled=sys.stderr.isatty(),
+    )
+    dashboard.start()
+
     def execute_fn(task: Task) -> TaskResult:
         # Acquire the group semaphore before executing, if the task belongs to
         # a concurrency group.  Released in a finally block so that a failure
@@ -1659,7 +1932,8 @@ def run_manifest(
             sem.acquire()
         try:
             result = _execute_with_retry(
-                task, claude_exe, git_root=git_root, log_config=log_config
+                task, claude_exe, git_root=git_root, log_config=log_config,
+                dashboard=dashboard,
             )
         finally:
             if sem is not None:
@@ -1673,6 +1947,13 @@ def run_manifest(
             tasks, executor, execute_fn, resumed_task_ids=resumed_task_ids
         )
         task_results: tuple[TaskResult, ...] = scheduler.run()
+
+    for tr in task_results:
+        if tr.skipped:
+            dashboard.update(tr.task_id, status="skipped")
+        elif tr.resumed:
+            dashboard.update(tr.task_id, status="resumed")
+    dashboard.stop()
 
     # Post-processing: merge write-task branches back to the base branch.
     # Only branches from newly-executed (non-resumed) tasks carry a branch_name.

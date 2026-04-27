@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import subprocess
 import sys
@@ -1026,6 +1027,75 @@ tasks:
 
     with pytest.raises(RunnerError):
         worktree_setup(git_repo, task)
+
+
+# ---------------------------------------------------------------------------
+# T4-6b: _worktree_setup — writes empty .claude/CLAUDE.md into worktree
+# ---------------------------------------------------------------------------
+
+
+def test_worktree_setup_CLAUDE_mdが空ファイルで作成される(git_repo: Path):
+    """.claude/CLAUDE.md must exist and be empty after _worktree_setup."""
+    import clade_parallel.runner as runner_module
+    from clade_parallel.manifest import load_manifest
+
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: claude-md-test
+tasks:
+  - id: write-task
+    agent: developer
+    read_only: false
+---
+"""
+    manifest_file = git_repo / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    worktree_setup = getattr(runner_module, "_worktree_setup")
+    result = worktree_setup(git_repo, task)
+    worktree_path = result[0] if isinstance(result, tuple) else result
+
+    claude_md = worktree_path / ".claude" / "CLAUDE.md"
+    assert claude_md.exists(), ".claude/CLAUDE.md must exist in the worktree"
+    assert claude_md.read_text(encoding="utf-8") == "", ".claude/CLAUDE.md must be empty"
+
+
+def test_worktree_setup_settings_local_json未存在でもCLAUDE_mdが作成される(
+    git_repo: Path,
+):
+    """.claude/CLAUDE.md is created even when settings.local.json is absent."""
+    import clade_parallel.runner as runner_module
+    from clade_parallel.manifest import load_manifest
+
+    # Ensure settings.local.json does NOT exist in this repo.
+    settings_local = git_repo / ".claude" / "settings.local.json"
+    assert not settings_local.exists()
+
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: no-settings-local-test
+tasks:
+  - id: write-task
+    agent: developer
+    read_only: false
+---
+"""
+    manifest_file = git_repo / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    worktree_setup = getattr(runner_module, "_worktree_setup")
+    result = worktree_setup(git_repo, task)
+    worktree_path = result[0] if isinstance(result, tuple) else result
+
+    claude_md = worktree_path / ".claude" / "CLAUDE.md"
+    assert claude_md.exists(), ".claude/CLAUDE.md must exist even without settings.local.json"
+    assert claude_md.read_text(encoding="utf-8") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -2913,3 +2983,135 @@ def test_concurrency_limitがmax_workers以上の場合は警告が発行され�
         f"Expected no starvation warning when limit >= max_workers, "
         f"but got: {[str(w.message) for w in starvation_warnings]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test: _format_tool_action
+# ---------------------------------------------------------------------------
+
+from clade_parallel.runner import (
+    _format_tool_action,  # noqa: PLC2701
+)
+
+
+def test_format_tool_action_Bash_短いコマンド():
+    assert _format_tool_action("Bash", {"command": "git status"}) == "Bash(git status)"
+
+
+def test_format_tool_action_Write_パス():
+    assert _format_tool_action("Write", {"file_path": "src/foo.py"}) == "Write(src/foo.py)"
+
+
+def test_format_tool_action_Bash_長いコマンドは末尾省略():
+    long_cmd = "a" * 60
+    result = _format_tool_action("Bash", {"command": long_cmd})
+    assert result.endswith("...)")
+    assert len(result) <= len("Bash()") + 45
+
+
+def test_format_tool_action_Write_長いパスは先頭省略():
+    long_path = "/" + "a" * 60
+    result = _format_tool_action("Write", {"file_path": long_path})
+    assert result.startswith("Write(...")
+    assert len(result) <= len("Write(...)") + 42
+
+
+def test_format_tool_action_未知のツールはツール名のみ():
+    assert _format_tool_action("TodoWrite", {"items": []}) == "TodoWrite"
+
+
+# ---------------------------------------------------------------------------
+# Test: _stream_json_reader
+# ---------------------------------------------------------------------------
+
+from clade_parallel.runner import (
+    _Dashboard,        # noqa: PLC2701
+    _RunState,         # noqa: PLC2701
+    _stream_json_reader,  # noqa: PLC2701
+)
+
+
+def _make_stream_json(*events: dict) -> io.StringIO:
+    lines = [json.dumps(e) for e in events]
+    return io.StringIO("\n".join(lines) + "\n")
+
+
+def test_stream_json_readerがresult_textを抽出する():
+    stream = _make_stream_json(
+        {"type": "system", "subtype": "init"},
+        {"type": "result", "subtype": "success", "result": "hello", "usage": {"output_tokens": 42}},
+    )
+    result_buf: list[str] = []
+    state = _RunState(last_output_ts=time.perf_counter(), has_received_output=False)
+    dashboard = _Dashboard(["t1"], enabled=False)
+
+    _stream_json_reader(stream, result_buf, state, "t1", dashboard)
+
+    assert result_buf == ["hello"]
+    assert state.has_received_output is True
+
+
+def test_stream_json_readerがtool_useでdashboardを更新する():
+    stream = _make_stream_json(
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "x", "name": "Write",
+                     "input": {"file_path": "src/foo.py"}}
+                ],
+            },
+        },
+        {"type": "result", "subtype": "success", "result": "done", "usage": {}},
+    )
+    result_buf: list[str] = []
+    state = _RunState(last_output_ts=time.perf_counter(), has_received_output=False)
+    dashboard = _Dashboard(["t1"], enabled=True)
+
+    _stream_json_reader(stream, result_buf, state, "t1", dashboard)
+
+    with dashboard._lock:
+        ds = dashboard._states["t1"]
+    assert ds.current_action == "Write(src/foo.py)"
+
+
+def test_stream_json_readerがoutput_tokensをdashboardに記録する():
+    stream = _make_stream_json(
+        {"type": "result", "subtype": "success", "result": "x",
+         "usage": {"output_tokens": 123}},
+    )
+    result_buf: list[str] = []
+    state = _RunState(last_output_ts=time.perf_counter(), has_received_output=False)
+    dashboard = _Dashboard(["t1"], enabled=True)
+
+    _stream_json_reader(stream, result_buf, state, "t1", dashboard)
+
+    with dashboard._lock:
+        assert dashboard._states["t1"].tokens_out == 123
+
+
+# ---------------------------------------------------------------------------
+# Test: _Dashboard disabled mode
+# ---------------------------------------------------------------------------
+
+
+def test_Dashboard_disabled時はupdate_が何もしない():
+    dashboard = _Dashboard(["t1", "t2"], enabled=False)
+    dashboard.start()  # should be no-op
+    dashboard.update("t1", status="running")
+    # state should not change (dashboard is disabled)
+    with dashboard._lock:
+        assert dashboard._states["t1"].status == "waiting"
+    dashboard.stop()  # should be no-op
+
+
+def test_Dashboard_updateがwaitingからの遷移でstart_tsをセットする():
+    dashboard = _Dashboard(["t1"], enabled=True)
+    assert dashboard._states["t1"].start_ts == 0.0
+    before = time.perf_counter()
+    dashboard.update("t1", status="starting_up")
+    after = time.perf_counter()
+    with dashboard._lock:
+        ts = dashboard._states["t1"].start_ts
+    assert before <= ts <= after
