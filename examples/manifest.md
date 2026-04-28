@@ -7,10 +7,6 @@ tasks:
     read_only: true
     cwd: ..
     prompt: |
-      Use the Agent tool with subagent_type "code-reviewer" to review the current repository.
-      Pass the following prompt to the subagent:
-
-      """
       ## 作業依頼
       コードレビューレポートの作成（E2E 自動実行）
 
@@ -27,19 +23,12 @@ tasks:
       - 出力先: `.claude/reports/code-review-report-*.md`（write-report.js 経由）
       - 最終メッセージにレポートファイルパスを必ず含めること
       - レポート生成後は終了すること
-      """
-
-      Do not ask any clarifying questions. Do not wait for approval. Invoke the subagent immediately with the above prompt and exit after the subagent completes.
     timeout_sec: 1200
   - id: security-review
     agent: security-reviewer
     read_only: true
     cwd: ..
     prompt: |
-      Use the Agent tool with subagent_type "security-reviewer" to review the current repository.
-      Pass the following prompt to the subagent:
-
-      """
       ## 作業依頼
       セキュリティレビューレポートの作成（E2E 自動実行）
 
@@ -59,15 +48,12 @@ tasks:
       - 出力先: `.claude/reports/security-review-report-*.md`（write-report.js 経由）
       - 最終メッセージにレポートファイルパスを必ず含めること
       - レポート生成後は終了すること
-      """
-
-      Do not ask any clarifying questions. Do not wait for approval. Invoke the subagent immediately with the above prompt and exit after the subagent completes.
     timeout_sec: 1200
 ---
 
 # Parallel Reviewers Demo
 
-> **Note:** This manifest invokes the Clade framework's `code-reviewer` and `security-reviewer` subagents via the Agent tool. It requires the Clade framework to be present in the working directory (or above) and the `claude` CLI to have access to those subagent definitions. If you do not have Clade set up, start with `examples/manifest-hello.md` instead, which uses only general-purpose prompts.
+> **Note:** This manifest uses `--agent` option to directly invoke the Clade framework's `code-reviewer` and `security-reviewer` agents. It requires the Clade framework to be present in the working directory (or above) and the `claude` CLI to have access to those agent definitions. If you do not have Clade set up, start with `examples/manifest-hello.md` instead, which uses only general-purpose prompts.
 
 このマニフェストは、Clade の `code-reviewer` と `security-reviewer` の 2 エージェントを
 並列実行するための最小構成サンプルです。
@@ -80,12 +66,12 @@ tasks:
 
 ## プロンプト設計
 
-各タスクのプロンプトは **サブエージェント直接呼び出し型** を採用しています。
-`claude -p`（非対話モード）での実行に対応するため、スラッシュコマンド（`/agent-xxx`）ではなく、
-Agent ツールに `subagent_type` を渡す自然言語プロンプトを使用しています。
+各タスクのプロンプトは **`--agent` オプション経由で直接起動する 1 層構造** を採用しています。
+`claude -p --agent <name>` で指定したエージェントに実際のレビュー指示を直接渡すため、
+wrapper プロンプト（Agent ツール呼び出し）は不要です。
 
-- スラッシュコマンド形式（`/agent-code-reviewer`）: 親 Claude との Q&A + 承認確認を前提とした対話モード専用
-- サブエージェント直接呼び出し形式: Agent ツールで `subagent_type` を指定して一発処理（非対話モードで動作可能）
+- `agent: code-reviewer` → `claude --agent code-reviewer -p "<実際の指示>"` として起動
+- `agent: security-reviewer` → `claude --agent security-reviewer -p "<実際の指示>"` として起動
 
 ## 実行方法
 
@@ -99,7 +85,7 @@ clade-parallel run examples/manifest.md --quiet
 
 ## 注意点
 
-- `timeout_sec: 1200`（20 分）に設定しています。Claude Code のサブエージェント実行には
+- `timeout_sec: 1200`（20 分）に設定しています。Claude Code のエージェント実行には
   数分かかる場合があります。環境に合わせて調整してください。
 - 実行には `claude` CLI が `PATH` に含まれている必要があります。
   カスタムパスの場合は `--claude-exe` オプションで指定してください。

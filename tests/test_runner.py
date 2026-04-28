@@ -260,8 +260,16 @@ def test_subprocess_runに正しい引数が渡される(fake_claude_runner, tmp
             else call_kwargs.get("args", call_kwargs.get("cmd"))
         )
         assert cmd[0] == custom_exe
-        assert cmd[1] == "-p"
-        assert cmd[2] == task.prompt
+        # When task.agent is set, cmd is [exe, "--agent", agent, "-p", prompt];
+        # when task.agent is empty, cmd is [exe, "-p", prompt].
+        if task.agent:
+            assert cmd[1] == "--agent"
+            assert cmd[2] == task.agent
+            assert cmd[3] == "-p"
+            assert cmd[4] == task.prompt
+        else:
+            assert cmd[1] == "-p"
+            assert cmd[2] == task.prompt
 
         # cwd should match task.cwd
         cwd = call_kwargs.get("cwd")
@@ -3136,3 +3144,168 @@ def test_sanitize_for_display_OSC_ESC_backslash終端を除去する():
 def test_sanitize_for_display_CRを除去する():
     # CR (\r) must be stripped to prevent terminal line overwrite
     assert _sanitize_for_display("safe\revil") == "safeevil"
+
+
+# ---------------------------------------------------------------------------
+# T-agent: --agent オプション付き cmd 組み立てテスト
+#
+# _execute_task が subprocess.Popen に渡す cmd を Popen モックで捕捉し、
+# task.agent の有無・位置を検証する。
+# ---------------------------------------------------------------------------
+
+
+def _make_capturing_popen(captured_cmds: list[list[str]]) -> type:
+    """Return a FakePopen subclass that records the cmd passed to Popen."""
+
+    class _CapturingPopen(FakePopen):
+        """FakePopen that records cmd in captured_cmds on construction."""
+
+        def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+            super().__init__(cmd, **kwargs)
+            self.returncode = 0
+            captured_cmds.append(list(cmd))
+
+    return _CapturingPopen
+
+
+def test_execute_task_agentが非空文字列のとき_agent_オプションがcmdに含まれる(
+    monkeypatch, tmp_path
+):
+    """When task.agent is a non-empty string, cmd must contain ['--agent', task.agent].
+
+    Arrange: task.agent='code-reviewer', _execute_task called with FakePopen.
+    Act: capture cmd passed to Popen.
+    Assert: '--agent' and 'code-reviewer' appear consecutively in cmd.
+    """
+    import clade_parallel.runner as runner_module
+    from clade_parallel.manifest import load_manifest
+
+    captured_cmds: list[list[str]] = []
+    monkeypatch.setattr(
+        runner_module.subprocess,
+        "Popen",
+        _make_capturing_popen(captured_cmds),
+    )
+
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: agent-option-test
+tasks:
+  - id: review-task
+    agent: code-reviewer
+    read_only: true
+---
+"""
+    manifest_file = tmp_path / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    execute_task = getattr(runner_module, "_execute_task")
+    execute_task(task, "claude", git_root=tmp_path)
+
+    assert len(captured_cmds) == 1, "Popen was not called"
+    cmd = captured_cmds[0]
+
+    # '--agent' followed by 'code-reviewer' must appear in cmd
+    assert "--agent" in cmd, f"Expected '--agent' in cmd, got: {cmd!r}"
+    agent_idx = cmd.index("--agent")
+    assert cmd[agent_idx + 1] == "code-reviewer", (
+        f"Expected 'code-reviewer' after '--agent', got: {cmd[agent_idx + 1]!r}"
+    )
+
+
+def test_execute_task_agentが空文字列のとき_agent_オプションがcmdに含まれない(
+    monkeypatch, tmp_path
+):
+    """When task.agent is an empty string, cmd must NOT contain '--agent' (backward compat).
+
+    Arrange: task with agent='', _execute_task called with FakePopen.
+    Act: capture cmd passed to Popen.
+    Assert: '--agent' does NOT appear in cmd.
+    """
+    import clade_parallel.runner as runner_module
+    from clade_parallel.manifest import load_manifest
+
+    captured_cmds: list[list[str]] = []
+    monkeypatch.setattr(
+        runner_module.subprocess,
+        "Popen",
+        _make_capturing_popen(captured_cmds),
+    )
+
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: agent-empty-test
+tasks:
+  - id: no-agent-task
+    agent: ""
+    read_only: true
+---
+"""
+    manifest_file = tmp_path / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    execute_task = getattr(runner_module, "_execute_task")
+    execute_task(task, "claude", git_root=tmp_path)
+
+    assert len(captured_cmds) == 1, "Popen was not called"
+    cmd = captured_cmds[0]
+
+    assert "--agent" not in cmd, (
+        f"Expected '--agent' NOT to be in cmd when agent is empty, got: {cmd!r}"
+    )
+
+
+def test_execute_task_agent_オプションは_p_フラグより前に置かれる(
+    monkeypatch, tmp_path
+):
+    """When task.agent is set, '--agent <name>' must appear before '-p' in cmd.
+
+    This verifies the argument order: claude [--agent <name>] -p <prompt>.
+    """
+    import clade_parallel.runner as runner_module
+    from clade_parallel.manifest import load_manifest
+
+    captured_cmds: list[list[str]] = []
+    monkeypatch.setattr(
+        runner_module.subprocess,
+        "Popen",
+        _make_capturing_popen(captured_cmds),
+    )
+
+    manifest_content = """\
+---
+clade_plan_version: "0.1"
+name: agent-order-test
+tasks:
+  - id: order-task
+    agent: security-reviewer
+    read_only: true
+---
+"""
+    manifest_file = tmp_path / "plan.md"
+    manifest_file.write_text(manifest_content, encoding="utf-8")
+    manifest = load_manifest(manifest_file)
+    task = manifest.tasks[0]
+
+    execute_task = getattr(runner_module, "_execute_task")
+    execute_task(task, "claude", git_root=tmp_path)
+
+    assert len(captured_cmds) == 1, "Popen was not called"
+    cmd = captured_cmds[0]
+
+    assert "--agent" in cmd, f"Expected '--agent' in cmd, got: {cmd!r}"
+    assert "-p" in cmd, f"Expected '-p' in cmd, got: {cmd!r}"
+
+    agent_idx = cmd.index("--agent")
+    p_idx = cmd.index("-p")
+
+    assert agent_idx < p_idx, (
+        f"Expected '--agent' (index {agent_idx}) to appear before '-p' (index {p_idx}) "
+        f"in cmd: {cmd!r}"
+    )

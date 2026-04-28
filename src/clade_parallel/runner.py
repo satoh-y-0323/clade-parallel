@@ -1459,7 +1459,10 @@ def _execute_task(
         RunnerError: If the claude binary is not found, or if ``task.read_only``
             is False but ``git_root`` is None, or if worktree creation fails.
     """
-    cmd = [claude_exe, _CLAUDE_PROMPT_FLAG, task.prompt]
+    cmd = [claude_exe]
+    if task.agent:
+        cmd.extend(["--agent", task.agent])
+    cmd.extend([_CLAUDE_PROMPT_FLAG, task.prompt])
     env = {**os.environ, **task.env}
 
     # read_only tasks enter a silent synthesis phase after reading files, so
