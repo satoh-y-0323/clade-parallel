@@ -1449,7 +1449,7 @@ def _execute_task(
     The command is assembled as::
 
         [claude_exe, "--agent", task.agent, "-p", task.prompt]  # when task.agent is set
-        [claude_exe, "-p", task.prompt]                         # when task.agent is empty
+        [claude_exe, "-p", task.prompt]  # when task.agent is empty
 
     Args:
         task: The Task configuration to execute.
