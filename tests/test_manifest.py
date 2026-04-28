@@ -3108,3 +3108,162 @@ tasks:
     path = manifest_file(content)
     with pytest.raises(ManifestError, match="concurrency_group"):
         load_manifest(path)
+
+
+# ---------------------------------------------------------------------------
+# T3: agent フィールドのバリデーションテスト
+#
+# 観点:
+#   (a) 非文字列型（int / list / None）で ManifestError が送出される
+#   (b) 不正文字種（空白・null バイト・'../' を含む値）で ManifestError が送出される
+#   (c) 空文字 "" は許容される（ManifestError が発生しない）
+#   (d) 正常値（code-reviewer / general-purpose / worktree-developer）は通過する
+# ---------------------------------------------------------------------------
+
+
+# --- (a) 非文字列型で ManifestError が送出される ---
+
+
+@pytest.mark.parametrize(
+    "invalid_agent,type_label",
+    [
+        (123, "int"),
+        (["code-reviewer"], "list"),
+        (None, "NoneType"),
+    ],
+    ids=["int", "list", "null"],
+)
+def test_タスクのagentが非文字列のときManifestErrorが送出される(
+    invalid_agent, type_label, manifest_file
+):
+    """Non-string agent (int / list / None) raises ManifestError from _parse_task.
+
+    Arrange: Build a manifest YAML where 'agent' is set to a non-string value.
+    Act:     Call load_manifest() on the constructed manifest file.
+    Assert:  ManifestError is raised; message contains 'agent' and mentions the type.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "review",
+                "agent": invalid_agent,
+                "read_only": True,
+            }
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r"agent"):
+        load_manifest(path)
+
+
+# --- (b) 不正文字種で ManifestError が送出される ---
+
+
+@pytest.mark.parametrize(
+    "invalid_agent,description",
+    [
+        ("name with space", "space"),
+        ("agent\x00name", "null_byte"),
+        ("../bad-agent", "path_traversal"),
+    ],
+    ids=["space", "null_byte", "path_traversal"],
+)
+def test_タスクのagentに不正文字種が含まれるときManifestErrorが送出される(
+    invalid_agent, description, manifest_file
+):
+    """Agent value with invalid characters (space / null byte / '../') raises ManifestError.
+
+    Arrange: Build a manifest YAML where 'agent' contains characters outside [A-Za-z0-9_-].
+    Act:     Call load_manifest() on the constructed manifest file.
+    Assert:  ManifestError is raised; message contains 'agent' and indicates invalid chars.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "review",
+                "agent": invalid_agent,
+                "read_only": True,
+            }
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    with pytest.raises(ManifestError, match=r"agent"):
+        load_manifest(path)
+
+
+# --- (c) 空文字 "" は許容される ---
+
+
+def test_タスクのagentが空文字のときは通過する(manifest_file):
+    """agent: "" (empty string) is accepted; task.agent == "".
+
+    Arrange: Build a manifest YAML where 'agent' is an empty string.
+    Act:     Call load_manifest() on the constructed manifest file.
+    Assert:  No ManifestError is raised; task.agent == "".
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "review",
+                "agent": "",
+                "read_only": True,
+            }
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    # Must NOT raise — empty string agent is intentionally allowed for backward compat.
+    result = load_manifest(path)
+    assert result.tasks[0].agent == ""
+
+
+# --- (d) 正常値は通過する ---
+
+
+@pytest.mark.parametrize(
+    "valid_agent",
+    [
+        "code-reviewer",
+        "general-purpose",
+        "worktree-developer",
+    ],
+    ids=["code-reviewer", "general-purpose", "worktree-developer"],
+)
+def test_タスクのagentが正常値のときは通過する(valid_agent, manifest_file):
+    """Valid agent names containing only [A-Za-z0-9_-] are accepted without error.
+
+    Arrange: Build a manifest YAML where 'agent' is a known-valid agent name.
+    Act:     Call load_manifest() on the constructed manifest file.
+    Assert:  No ManifestError is raised; task.agent equals the input value.
+    """
+    import yaml
+
+    front = {
+        "clade_plan_version": "0.1",
+        "name": "test",
+        "tasks": [
+            {
+                "id": "review",
+                "agent": valid_agent,
+                "read_only": True,
+            }
+        ],
+    }
+    content = f"---\n{yaml.dump(front)}---\n"
+    path = manifest_file(content)
+    result = load_manifest(path)
+    assert result.tasks[0].agent == valid_agent
