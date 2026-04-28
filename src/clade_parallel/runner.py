@@ -351,6 +351,8 @@ class _Dashboard:
     def _count_final_stats(self) -> tuple[int, int, int, int]:
         """Aggregate final task counts from the current state snapshot.
 
+        Must be called with ``self._lock`` held.
+
         Returns:
             A 4-tuple ``(n_complete, n_failed, n_skipped_or_resumed, n_total)``.
         """
@@ -383,7 +385,7 @@ class _Dashboard:
             if n_failed > 0:
                 parts.append(f"{n_failed} failed")
             if n_skipped_or_resumed > 0:
-                parts.append(f"{n_skipped_or_resumed} skipped")
+                parts.append(f"{n_skipped_or_resumed} skipped/resumed")
             return "[done] " + ", ".join(parts)
 
         # Compute overall elapsed from the earliest start_ts.
@@ -456,7 +458,7 @@ class _Dashboard:
         now = time.perf_counter()
 
         if final:
-            n_complete, n_failed, _n_skipped, n_total = self._count_final_stats()
+            n_complete, n_failed, _n_skipped_or_resumed, n_total = self._count_final_stats()
             if n_failed > 0:
                 header = (
                     f"clade-parallel done"
