@@ -326,19 +326,15 @@ class _Dashboard:
         if important or self._live_renders:
             self._dirty_event.set()  # wake render loop for immediate redraw
 
-    def print_line(self, message: str) -> None:
-        """Emit a fallback progress line when dashboard is disabled."""
-        if not self._enabled:
-            print(message, file=sys.stderr, flush=True)
-
     # ------------------------------------------------------------------
     # Internal rendering
     # ------------------------------------------------------------------
 
     def _render_loop(self) -> None:
-        # TTY: render every _DASHBOARD_IDLE_RENDER_SEC (or immediately on state change).
-        # Non-TTY: append plain-text snapshots at _DASHBOARD_NONLIVE_RENDER_SEC intervals
-        # with a _PROGRESS_INTERVAL_SEC debounce so rapid state changes don't flood output.
+        # Wake on _dirty_event, then apply a _PROGRESS_INTERVAL_SEC debounce before
+        # rendering (non-TTY only) so rapid state changes don't flood output.
+        # When no dirty event arrives, fall back to a periodic render after
+        # _DASHBOARD_IDLE_RENDER_SEC (TTY) or _DASHBOARD_NONLIVE_RENDER_SEC (non-TTY).
         interval = _DASHBOARD_IDLE_RENDER_SEC if self._live_renders else _DASHBOARD_NONLIVE_RENDER_SEC
         last_render_ts = 0.0
         while not self._stop_event.is_set():
@@ -351,6 +347,20 @@ class _Dashboard:
             if now - last_render_ts >= min_gap:
                 self._do_render()
                 last_render_ts = now
+
+    def _count_final_stats(self) -> tuple[int, int, int, int]:
+        """Aggregate final task counts from the current state snapshot.
+
+        Returns:
+            A 4-tuple ``(n_complete, n_failed, n_skipped_or_resumed, n_total)``.
+        """
+        n_complete = sum(1 for s in self._states.values() if s.status == "complete")
+        n_failed = sum(1 for s in self._states.values() if s.status == "failed")
+        n_skipped_or_resumed = sum(
+            1 for s in self._states.values() if s.status in ("skipped", "resumed")
+        )
+        n_total = len(self._task_ids)
+        return n_complete, n_failed, n_skipped_or_resumed, n_total
 
     def _build_summary_line(self, *, final: bool) -> str:
         """Build a single-line summary for non-TTY output.
@@ -366,13 +376,15 @@ class _Dashboard:
         now = time.perf_counter()
 
         if final:
-            n_complete = sum(1 for s in self._states.values() if s.status == "complete")
-            n_failed = sum(1 for s in self._states.values() if s.status == "failed")
-            n_total = len(self._task_ids)
-            if n_failed > 0:
-                return f"[done] {n_complete}/{n_total} succeeded, {n_failed} failed"
-            else:
+            n_complete, n_failed, n_skipped_or_resumed, n_total = self._count_final_stats()
+            if n_failed == 0 and n_skipped_or_resumed == 0:
                 return f"[done] all {n_total} tasks completed"
+            parts: list[str] = [f"{n_complete}/{n_total} succeeded"]
+            if n_failed > 0:
+                parts.append(f"{n_failed} failed")
+            if n_skipped_or_resumed > 0:
+                parts.append(f"{n_skipped_or_resumed} skipped")
+            return "[done] " + ", ".join(parts)
 
         # Compute overall elapsed from the earliest start_ts.
         start_times = [s.start_ts for s in self._states.values() if s.start_ts > 0]
@@ -416,7 +428,7 @@ class _Dashboard:
             # TTY: build full multi-line output and overwrite previous frame in-place.
             width = max(shutil.get_terminal_size(fallback=(80, 24)).columns, 20)
             with self._lock:
-                lines = self._build_lines(final=final, width=width)
+                lines = self._build_lines(final=final)
             chunks: list[str] = []
             if self._lines_rendered > 0:
                 chunks.append(f"\033[{self._lines_rendered}A")
@@ -439,15 +451,12 @@ class _Dashboard:
             sys.stderr.write(payload)
             sys.stderr.flush()
 
-    def _build_lines(self, *, final: bool, width: int) -> list[str]:
-        # width: reserved for future per-line truncation; applied in _do_render for now
+    def _build_lines(self, *, final: bool) -> list[str]:
         lines: list[str] = []
         now = time.perf_counter()
 
         if final:
-            n_complete = sum(1 for s in self._states.values() if s.status == "complete")
-            n_failed = sum(1 for s in self._states.values() if s.status == "failed")
-            n_total = len(self._task_ids)
+            n_complete, n_failed, _n_skipped, n_total = self._count_final_stats()
             if n_failed > 0:
                 header = (
                     f"clade-parallel done"
@@ -1253,12 +1262,9 @@ def _stream_json_reader(
 ) -> None:
     """Read ``--output-format stream-json`` events and update *dashboard*.
 
-    Called only from ``_run_with_progress`` when the dashboard is enabled
-    (TTY detected, i.e. ``dashboard.enabled == True``).  In non-TTY mode
-    ``_stream_reader`` is used instead and this function is never invoked.
-
-    Extracts the final result text into *result_buf* (one element at most).
-    All other events drive dashboard state updates.
+    Parses the stream-json event sequence produced by the claude CLI and
+    translates each event into dashboard state updates.  Extracts the final
+    result text into *result_buf* (one element at most).
     """
     for line in stream:
         with state.lock:
