@@ -60,6 +60,12 @@ _KNOWN_WEBHOOK_KEYS: frozenset[str] = frozenset({"webhook_url"})
 # worktree directory paths (e.g., ".clade-worktrees/<task.id>-<uuid8>").
 _TASK_ID_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# Regular expression that defines the set of characters allowed in an agent name.
+# Only alphanumeric characters, hyphens, and underscores are permitted.
+# This prevents shell injection or unexpected CLI flag interpretation when the
+# agent name is passed as a ``--agent`` argument to the claude executable.
+_AGENT_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_-]+$")
+
 # Environment variable keys that are blocked for security reasons.
 # These keys can be used to inject malicious code via dynamic linker or
 # interpreter path manipulation.
@@ -628,6 +634,19 @@ def _parse_task(
     task_id = raw["id"]
     agent = raw["agent"]
     read_only = raw["read_only"]
+
+    # Validate agent: must be a string; when non-empty it must match [A-Za-z0-9_-]+.
+    # Empty string is allowed (runner omits --agent flag for backward compatibility).
+    if not isinstance(agent, str):
+        raise ManifestError(
+            f"Task '{task_id}': 'agent' must be a string, got {type(agent)!r}."
+        )
+    if agent and not _AGENT_PATTERN.match(agent):
+        raise ManifestError(
+            f"Task '{task_id}': 'agent' {agent!r} contains invalid characters. "
+            "Only alphanumeric characters, hyphens, and underscores are allowed "
+            "(pattern: [A-Za-z0-9_-]+)."
+        )
 
     # Validate task_id: must be a non-empty string matching [A-Za-z0-9_-]+.
     # This prevents path traversal attacks when task.id is used to construct

@@ -1446,6 +1446,11 @@ def _execute_task(
     the task and the subprocess runs inside it.  The worktree is removed in a
     ``try/finally`` block, guaranteeing cleanup regardless of task outcome.
 
+    The command is assembled as::
+
+        [claude_exe, "--agent", task.agent, "-p", task.prompt]  # when task.agent is set
+        [claude_exe, "-p", task.prompt]                         # when task.agent is empty
+
     Args:
         task: The Task configuration to execute.
         claude_exe: Path or name of the claude executable.
