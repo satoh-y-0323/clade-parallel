@@ -352,37 +352,92 @@ class _Dashboard:
                 self._do_render()
                 last_render_ts = now
 
+    def _build_summary_line(self, *, final: bool) -> str:
+        """Build a single-line summary for non-TTY output.
+
+        Args:
+            final: When True, returns a completion summary (e.g. ``[done] all 3 tasks
+                completed``).  When False, returns a running-state snapshot with elapsed
+                time and per-group task lists.
+
+        Returns:
+            A single string without a trailing newline.
+        """
+        now = time.perf_counter()
+
+        if final:
+            n_complete = sum(1 for s in self._states.values() if s.status == "complete")
+            n_failed = sum(1 for s in self._states.values() if s.status == "failed")
+            n_total = len(self._task_ids)
+            if n_failed > 0:
+                return f"[done] {n_complete}/{n_total} succeeded, {n_failed} failed"
+            else:
+                return f"[done] all {n_total} tasks completed"
+
+        # Compute overall elapsed from the earliest start_ts.
+        start_times = [s.start_ts for s in self._states.values() if s.start_ts > 0]
+        if start_times:
+            overall_elapsed = now - min(start_times)
+        else:
+            overall_elapsed = 0.0
+
+        running_parts: list[str] = []
+        waiting_parts: list[str] = []
+        done_parts: list[str] = []
+
+        for tid in self._task_ids:
+            state = self._states[tid]
+            if state.status in ("running", "starting_up"):
+                elapsed = now - state.start_ts if state.start_ts > 0 else 0.0
+                running_parts.append(f"{tid} {elapsed:.0f}s")
+            elif state.status == "waiting":
+                waiting_parts.append(tid)
+            elif state.status == "complete":
+                done_parts.append(f"{tid} ✓")
+            elif state.status == "failed":
+                done_parts.append(f"{tid} ✗")
+            elif state.status in ("skipped", "resumed"):
+                done_parts.append(f"{tid} -")
+
+        parts: list[str] = []
+        if running_parts:
+            parts.append("running: " + ", ".join(running_parts))
+        if waiting_parts:
+            parts.append("waiting: " + ", ".join(waiting_parts))
+        if done_parts:
+            parts.append("done: " + ", ".join(done_parts))
+
+        summary = " | ".join(parts) if parts else "starting..."
+        return f"[{overall_elapsed:.0f}s] {summary}"
+
     def _do_render(self, final: bool = False) -> None:
-        width = max(shutil.get_terminal_size(fallback=(80, 24)).columns, 20)
-        with self._lock:
-            lines = self._build_lines(final=final, width=width)
-        chunks: list[str] = []
+        buf = getattr(sys.stderr, "buffer", None)
         if self._live_renders:
-            # TTY: move cursor up to overwrite the previous frame in-place.
+            # TTY: build full multi-line output and overwrite previous frame in-place.
+            width = max(shutil.get_terminal_size(fallback=(80, 24)).columns, 20)
+            with self._lock:
+                lines = self._build_lines(final=final, width=width)
+            chunks: list[str] = []
             if self._lines_rendered > 0:
                 chunks.append(f"\033[{self._lines_rendered}A")
             for line in lines:
                 chunks.append(f"\033[2K{line[:width]}\n")
+            payload = "".join(chunks)
+            self._lines_rendered = len(lines)
         else:
-            # Non-TTY: append a plain-text snapshot (no cursor movement).
-            chunks.append("\n")
-            for line in lines:
-                chunks.append(f"{line[:width]}\n")
-        payload = "".join(chunks)
+            # Non-TTY: append a single-line summary.
+            with self._lock:
+                line = self._build_summary_line(final=final)
+            payload = line + "\n"
+            # _lines_rendered stays 0 in non-TTY mode (no cursor movement).
         # Write as UTF-8 bytes to bypass the platform's default encoding
         # (e.g. cp932 on Japanese Windows) which may not support all Unicode chars.
-        buf = getattr(sys.stderr, "buffer", None)
         if buf is not None:
             buf.write(payload.encode("utf-8"))
             buf.flush()
         else:
             sys.stderr.write(payload)
             sys.stderr.flush()
-        # _lines_rendered is only written here and read in the same thread
-        # (_render_loop or stop→_do_render).  stop() joins the render thread
-        # before calling _do_render directly, so no concurrent access occurs.
-        # In non-TTY (append) mode, keep at 0 so stop() never tries to move the cursor.
-        self._lines_rendered = len(lines) if self._live_renders else 0
 
     def _build_lines(self, *, final: bool, width: int) -> list[str]:
         # width: reserved for future per-line truncation; applied in _do_render for now
