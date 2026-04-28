@@ -2060,11 +2060,13 @@ def run_manifest(
     claude_exe = claude_executable
 
     _tty = sys.stderr.isatty()
-    _dash_enabled = _tty if dashboard_enabled is None else dashboard_enabled
+    # Always enable the dashboard; non-TTY uses single-line summary mode instead
+    # of the ANSI cursor-overwrite mode.  Only --no-dashboard (False) disables it.
+    _dash_enabled = True if dashboard_enabled is None else dashboard_enabled
     dashboard = _Dashboard(
         [t.id for t in tasks],
         enabled=_dash_enabled,
-        live_renders=_tty,  # intermediate frames only when stderr is a real TTY
+        live_renders=_tty,  # cursor-overwrite only when stderr is a real TTY
     )
     dashboard.start()
 

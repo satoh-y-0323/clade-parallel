@@ -1593,11 +1593,11 @@ tasks:
 
 
 def test_進捗表示running_フォーマットがstderrに出力される(monkeypatch, tmp_path, capfd):
-    """Watchdog outputs '[task_id] running...' to stderr within the first interval.
+    """Dashboard emits a single-line summary to stderr in non-TTY mode.
 
-    _PROGRESS_INTERVAL_SEC is patched to 0.05 so the watchdog fires quickly.
+    _PROGRESS_INTERVAL_SEC is patched to 0.05 so the render debounce is short.
     A blocking FakePopen is used so the process stays alive long enough for
-    at least one watchdog tick to emit a progress line.
+    at least one summary line to be emitted.
     """
     import clade_parallel.runner as runner_module
 
@@ -1637,29 +1637,21 @@ tasks:
 
     captured = capfd.readouterr()
     stderr_output = captured.err
-    # At least one progress line should contain the task id and one of:
-    # 'starting up...' (no output yet, within startup grace period),
-    # 'running...' (recent output), or 'thinking...' (idle after output).
+    # The dashboard emits at least one summary line containing the task id,
+    # and a final "[done]" line when all tasks complete.
     assert (
-        "[watch-task]" in stderr_output
-    ), f"Expected '[watch-task]' in stderr, got: {stderr_output!r}"
+        "watch-task" in stderr_output
+    ), f"Expected 'watch-task' in stderr, got: {stderr_output!r}"
     assert (
-        "starting up..." in stderr_output
-        or "running..." in stderr_output
-        or "thinking..." in stderr_output
-    ), (
-        f"Expected 'starting up...', 'running...', or 'thinking...' in "
-        f"stderr, got: {stderr_output!r}"
-    )
+        "[done]" in stderr_output
+    ), f"Expected '[done]' summary line in stderr, got: {stderr_output!r}"
 
 
 def test_進捗表示_初回出力前は_starting_up_を表示する(monkeypatch, tmp_path, capfd):
-    """Watchdog outputs '[task_id] starting up... Xs' before any output arrives.
+    """Dashboard shows the task in the summary even before any output arrives.
 
-    During the startup phase (worktree creation + claude launch takes 60-120s
-    silently), showing 'thinking...' misleads users. The new behavior shows
-    'starting up... Xs' until the first output line arrives or _STARTUP_DISPLAY_SEC
-    elapses.
+    During the startup phase the task is placed in the 'running:' group of
+    the single-line summary so the user can see it is active.
     """
     import clade_parallel.runner as runner_module
 
@@ -1705,11 +1697,11 @@ tasks:
 
     captured = capfd.readouterr()
     stderr_output = captured.err
-    # With _STARTUP_DISPLAY_SEC = 60 and total elapsed < 1s in this test,
-    # the watchdog should emit 'starting up...' because no output was received.
+    # The task should appear in a 'running:' group in the summary line because
+    # starting_up status is treated as running in the single-line format.
     assert (
-        "[startup-task] starting up..." in stderr_output
-    ), f"Expected 'starting up...' in stderr, got: {stderr_output!r}"
+        "startup-task" in stderr_output
+    ), f"Expected 'startup-task' in stderr, got: {stderr_output!r}"
 
 
 # ---------------------------------------------------------------------------
